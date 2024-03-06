@@ -56,13 +56,15 @@ def train(rank, a, h):
 
     # create or scan the latest checkpoint from checkpoints directory
     if rank == 0:
-        print(generator)
+        # print(generator)
         os.makedirs(a.checkpoint_path, exist_ok=True)
         print("checkpoints directory : ", a.checkpoint_path)
 
     if os.path.isdir(a.checkpoint_path):
         cp_g = scan_checkpoint(a.checkpoint_path, 'g_')
         cp_do = scan_checkpoint(a.checkpoint_path, 'do_')
+        print(cp_g)
+        print(cp_do)
 
     # load the latest checkpoint if exists
     steps = 0
@@ -79,6 +81,7 @@ def train(rank, a, h):
         last_epoch = state_dict_do['epoch']
 
     # initialize DDP, optimizers, and schedulers
+    # multi gpus
     if h.num_gpus > 1:
         generator = DistributedDataParallel(generator, device_ids=[rank]).to(device)
         mpd = DistributedDataParallel(mpd, device_ids=[rank]).to(device)

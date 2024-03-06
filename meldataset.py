@@ -140,6 +140,8 @@ class MelDataset(torch.utils.data.Dataset):
 
         print("INFO: checking dataset integrity...")
         for i in tqdm(range(len(self.audio_files))):
+            # if not os.path.exists(self.audio_files[i]):
+            #     print("{} not found".format(self.audio_files[i]))
             assert os.path.exists(self.audio_files[i]), "{} not found".format(self.audio_files[i])
 
     def __getitem__(self, index):
