@@ -383,31 +383,23 @@ def main():
     print('Initializing Training Process..')
 
     parser = argparse.ArgumentParser()
-
     parser.add_argument('--group_name', default=None)
-
     parser.add_argument('--input_wavs_dir', default='LibriTTS')
     parser.add_argument('--input_mels_dir', default='ft_dataset')
     parser.add_argument('--input_training_file', default='LibriTTS/train-full.txt')
     parser.add_argument('--input_validation_file', default='LibriTTS/val-full.txt')
-
     parser.add_argument('--list_input_unseen_wavs_dir', nargs='+', default=['LibriTTS', 'LibriTTS'])
     parser.add_argument('--list_input_unseen_validation_file', nargs='+', default=['LibriTTS/dev-clean.txt', 'LibriTTS/dev-other.txt'])
-
     parser.add_argument('--checkpoint_path', default='exp/bigvgan')
     parser.add_argument('--config', default='')
-
     parser.add_argument('--training_epochs', default=100000, type=int)
     parser.add_argument('--stdout_interval', default=5, type=int)
     parser.add_argument('--checkpoint_interval', default=50000, type=int)
     parser.add_argument('--summary_interval', default=100, type=int)
     parser.add_argument('--validation_interval', default=50000, type=int)
-
     parser.add_argument('--freeze_step', default=0, type=int,
                         help='freeze D for the first specified steps. G only uses regression loss for these steps.')
-
     parser.add_argument('--fine_tuning', default=False, type=bool)
-
     parser.add_argument('--debug', default=False, type=bool,
                         help="debug mode. skips validation loop throughout training")
     parser.add_argument('--evaluate', default=False, type=bool,
@@ -418,15 +410,11 @@ def main():
                         help="skip seen dataset. useful for test set inference")
     parser.add_argument('--save_audio', default=False, type=bool,
                         help="save audio of test set inference to disk")
-
     a = parser.parse_args()
-
     with open(a.config) as f:
         data = f.read()
-
     json_config = json.loads(data)
     h = AttrDict(json_config)
-
     build_env(a.config, 'config.json', a.checkpoint_path)
 
     torch.manual_seed(h.seed)
