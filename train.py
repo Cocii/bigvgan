@@ -1,10 +1,3 @@
-# Copyright (c) 2022 NVIDIA CORPORATION. 
-#   Licensed under the MIT license.
-
-# Adapted from https://github.com/jik876/hifi-gan under the MIT license.
-#   LICENSE is in incl_licenses directory.
-
-
 import warnings
 warnings.simplefilter(action='ignore', category=FutureWarning)
 import itertools
@@ -28,8 +21,27 @@ import torchaudio as ta
 from pesq import pesq
 from tqdm import tqdm
 import auraloss
-
+from rawnet_model import RawNet
+import torch.nn as nn
+import yaml
 torch.backends.cudnn.benchmark = False
+
+def init_weights(module):
+    if isinstance(module, nn.Linear):
+        torch.nn.init.xavier_uniform_(module.weight)
+        module.bias.data.fill_(0.01)
+def read_yaml(config_path):
+    """
+    Read YAML file.
+
+    :param config_path: path to the YAML config file.
+    :type config_path: str
+    :return: dictionary correspondent to YAML content
+    :rtype dict
+    """
+    with open(config_path, 'r') as f:
+        config = yaml.safe_load(f)
+    return config
 
 def train(rank, a, h):
     if h.num_gpus > 1:
@@ -41,6 +53,20 @@ def train(rank, a, h):
     torch.cuda.manual_seed(h.seed)
     torch.cuda.set_device(rank)
     device = torch.device('cuda:{:d}'.format(rank))
+
+    # define rawnet2 detector
+    current_script_directory = os.path.dirname(os.path.abspath(__file__))
+    config_path = os.path.join(current_script_directory, "config", 'rawnet_config.yaml')
+    config_rawnet = read_yaml(config_path)
+    win_len = config_rawnet['win_len']
+    config_rawnet['model_path'] =  f'/workspace/rawnet2_davide/rawnet_model/RawNet2_STRETCHED_FakeAVCeleb_22khz_{win_len}SEC.pth'
+    rawnet = RawNet(config_rawnet['model'], 'cuda')
+    rawnet = (rawnet).to('cuda')
+    rawnet.apply(init_weights)
+    if os.path.exists(config_rawnet['model_path']):
+        rawnet.load_state_dict(torch.load(config_rawnet['model_path'], map_location='cuda'))
+        print('RawNet2 Model loaded : {}'.format(config_rawnet['model_path']))
+    criterion = nn.CrossEntropyLoss(label_smoothing=0.2)
 
     # define BigVGAN generator
     generator = BigVGAN(h).to(device)
@@ -262,6 +288,18 @@ def train(rank, a, h):
             y = y.to(device, non_blocking=True)
             y_mel = y_mel.to(device, non_blocking=True)
             y = y.unsqueeze(1)
+            
+            # x in rawnet2
+            # x should be reshape as win_len * sampling_rate
+            # batch_y change to real audios!!
+            batch_size = x.size(0)
+            batch_y = batch_y.view(-1).type(torch.int64).to(device)
+            batch_out = rawnet(x)
+            batch_loss = criterion(batch_out, batch_y)
+            _, batch_pred = batch_out.max(dim=1)
+            # num_correct = (batch_pred == batch_y).sum(dim=0).item()
+            # train_accuracy = num_correct/batch_size
+            running_loss = batch_loss.item()
 
             y_g_hat = generator(x)
             y_g_hat_mel = mel_spectrogram(y_g_hat.squeeze(1), h.n_fft, h.num_mels, h.sampling_rate, h.hop_size, h.win_size,
@@ -277,7 +315,7 @@ def train(rank, a, h):
             y_ds_hat_r, y_ds_hat_g, _, _ = mrd(y, y_g_hat.detach())
             loss_disc_s, losses_disc_s_r, losses_disc_s_g = discriminator_loss(y_ds_hat_r, y_ds_hat_g)
 
-            loss_disc_all = loss_disc_s + loss_disc_f
+            loss_disc_all = loss_disc_s + loss_disc_f + batch_loss
 
             # whether to freeze D for initial training steps
             if steps >= a.freeze_step:
@@ -307,7 +345,7 @@ def train(rank, a, h):
             loss_gen_s, losses_gen_s = generator_loss(y_ds_hat_g)
 
             if steps >= a.freeze_step:
-                loss_gen_all = loss_gen_s + loss_gen_f + loss_fm_s + loss_fm_f + loss_mel
+                loss_gen_all = loss_gen_s + loss_gen_f + loss_fm_s + loss_fm_f + loss_mel + batch_loss
             else:
                 print("WARNING: using regression loss only for G for the first {} steps".format(a.freeze_step))
                 loss_gen_all = loss_mel
