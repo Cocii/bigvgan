@@ -6,5 +6,5 @@ python train.py \
 --list_input_unseen_wavs_dir /workspace/BigVGAN/BigVGAN/LibriTTS_pair/real_audios \
 --list_input_unseen_validation_file /workspace/BigVGAN/BigVGAN/LibriTTS_pair/unseen.txt \
 --config /workspace/BigVGAN/BigVGAN/bigvgan_22khz_80band/config.json \
---checkpoint_path /workspace/BigVGAN/BigVGAN/bigvgan_22khz_80band/rawnet2_bigvgan_0 \
---fine_tuning False
+--checkpoint_path /workspace/BigVGAN/BigVGAN/bigvgan_22khz_80band/ \
+--fine_tuning True

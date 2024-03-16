@@ -61,11 +61,16 @@ def train(rank, a, h):
     win_len = config_rawnet['win_len']
     config_rawnet['model_path'] =  f'/workspace/rawnet2_davide/rawnet_model/RawNet2_STRETCHED_FakeAVCeleb_22khz_{win_len}SEC.pth'
     rawnet = RawNet(config_rawnet['model'], 'cuda')
+    optim_rawnet = torch.optim.Adam(rawnet.parameters(), lr=config_rawnet['lr']) #, weight_decay=config['weight_decay'])
     rawnet = (rawnet).to('cuda')
     rawnet.apply(init_weights)
+
     if os.path.exists(config_rawnet['model_path']):
-        rawnet.load_state_dict(torch.load(config_rawnet['model_path'], map_location='cuda'))
-        print('RawNet2 Model loaded : {}'.format(config_rawnet['model_path']))
+        checkpoint = torch.load(config_rawnet['model_path'], map_location='cuda')
+        rawnet.load_state_dict(checkpoint['model_state_dict'])
+        optim_rawnet.load_state_dict(checkpoint['optim_rawnet'])
+        print('RawNet2 model and optimizer loaded from {}'.format(config_rawnet['model_path']))
+
     criterion = nn.CrossEntropyLoss(label_smoothing=0.2)
 
     # define BigVGAN generator
@@ -116,6 +121,7 @@ def train(rank, a, h):
     optim_g = torch.optim.AdamW(generator.parameters(), h.learning_rate, betas=[h.adam_b1, h.adam_b2])
     optim_d = torch.optim.AdamW(itertools.chain(mrd.parameters(), mpd.parameters()),
                                 h.learning_rate, betas=[h.adam_b1, h.adam_b2])
+    
 
     if state_dict_do is not None:
         optim_g.load_state_dict(state_dict_do['optim_g'])
@@ -290,23 +296,20 @@ def train(rank, a, h):
             y = y.unsqueeze(1)
             y_g_hat = generator(x)
 
-            # x in rawnet2
-            # x should be reshape as win_len * sampling_rate
-            # batch_y change to real audios!!
+
+
+            ########################################
+            #                Rawnet                #
+            ########################################   
+            # 在"generator"部分之前添加以下代码
+            optim_rawnet.zero_grad()
+
             batch_size = y_g_hat.size(0)
-            batch_y = torch.ones(batch_size).type(torch.int64).to(device)
+            batch_y = torch.ones(batch_size).type(torch.int64).to(device)  # 假设生成的音频为假音频,标签为1
             batch_out = rawnet(y_g_hat.squeeze(1))
             rawnet_loss = criterion(batch_out, batch_y)
-            _, batch_pred = batch_out.max(dim=1)
-            # num_correct = (batch_pred == batch_y).sum(dim=0).item()
-            # train_accuracy = num_correct/batch_size
-            running_loss = rawnet_loss.item()
-
             y_g_hat_mel = mel_spectrogram(y_g_hat.squeeze(1), h.n_fft, h.num_mels, h.sampling_rate, h.hop_size, h.win_size,
                                           h.fmin, h.fmax_for_loss)
-
-            optim_d.zero_grad()
-
             # MPD
             y_df_hat_r, y_df_hat_g, _, _ = mpd(y, y_g_hat.detach())
             loss_disc_f, losses_disc_f_r, losses_disc_f_g = discriminator_loss(y_df_hat_r, y_df_hat_g)
@@ -345,14 +348,16 @@ def train(rank, a, h):
             loss_gen_s, losses_gen_s = generator_loss(y_ds_hat_g)
 
             if steps >= a.freeze_step:
-                loss_gen_all = loss_gen_s + loss_gen_f + loss_fm_s + loss_fm_f + loss_mel + rawnet_loss
+                loss_gen_all = loss_gen_s + loss_gen_f + loss_fm_s + loss_fm_f + loss_mel + 0.0002*rawnet_loss
             else:
                 print("WARNING: using regression loss only for G for the first {} steps".format(a.freeze_step))
                 loss_gen_all = loss_mel
 
+            optim_d.zero_grad()
             loss_gen_all.backward()
             grad_norm_g = torch.nn.utils.clip_grad_norm_(generator.parameters(), 1000.)
             optim_g.step()
+            optim_rawnet.step()
 
             if rank == 0:
                 # STDOUT logging
@@ -376,6 +381,10 @@ def train(rank, a, h):
                                      'optim_d': optim_d.state_dict(),
                                      'steps': steps,
                                      'epoch': epoch})
+                    checkpoint_path = "{}/rawnet_{:08d}".format(a.checkpoint_path, steps)
+                    save_checkpoint(checkpoint_path,
+                                    {'rawnet': rawnet.state_dict(),
+                                    'optim_rawnet': optim_rawnet.state_dict()})
 
                 # Tensorboard summary logging
                 if steps % a.summary_interval == 0:
