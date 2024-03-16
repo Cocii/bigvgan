@@ -6,7 +6,7 @@
 ##df_eval_path: 'data/df_eval.csv'
 #df_aug_path: 'data/df_aug.csv'
 fs: 22050
-batch_size: 64
+batch_size: 8
 num_epochs: 150
 early_stopping: 15
 lr: 0.0001
