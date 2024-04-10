@@ -375,19 +375,22 @@ def train(rank, a, h):
                           format(steps, loss_gen_all, mel_error, time.time() - start_b, rawnet_loss))
 
                 # checkpointing
-                if steps % a.checkpoint_interval == 0 and steps != 0:
-                    checkpoint_path = "{}/g_{:08d}".format(a.checkpoint_path, steps)
-                    save_checkpoint(checkpoint_path,
-                                    {'generator': (generator.module if h.num_gpus > 1 else generator).state_dict()})
-                    checkpoint_path = "{}/do_{:08d}".format(a.checkpoint_path, steps)
-                    save_checkpoint(checkpoint_path, 
-                                    {'mpd': (mpd.module if h.num_gpus > 1 else mpd).state_dict(),
-                                     'mrd': (mrd.module if h.num_gpus > 1 else mrd).state_dict(),
-                                     'optim_g': optim_g.state_dict(),
-                                     'optim_d': optim_d.state_dict(),
-                                     'steps': steps,
-                                     'epoch': epoch})
-                    checkpoint_path = "{}/rawnet_{:08d}".format(a.checkpoint_path, steps)
+                if steps % (a.checkpoint_interval) == 0 and steps != 0:
+                    checkpoint_path = "{}/g_{:08d}".format(os.path.join(a.checkpoint_path, "generator"), steps)
+                    os.makedirs(os.path.join(a.checkpoint_path, "generator"), exist_ok=True)
+                    save_checkpoint(checkpoint_path, {'generator': (generator.module if h.num_gpus > 1 else generator).state_dict()})
+
+                    checkpoint_path = "{}/do_{:08d}".format(os.path.join(a.checkpoint_path, "discriminator"), steps)
+                    os.makedirs(os.path.join(a.checkpoint_path, "discriminator"), exist_ok=True)
+                    save_checkpoint(checkpoint_path, {'mpd': (mpd.module if h.num_gpus > 1 else mpd).state_dict(),
+                                                    'mrd': (mrd.module if h.num_gpus > 1 else mrd).state_dict(),
+                                                    'optim_g': optim_g.state_dict(),
+                                                    'optim_d': optim_d.state_dict(),
+                                                    'steps': steps,
+                                                    'epoch': epoch})
+
+                    checkpoint_path = "{}/rawnet_{:08d}".format(os.path.join(a.checkpoint_path, "rawnet"), steps)
+                    os.makedirs(os.path.join(a.checkpoint_path, "rawnet"), exist_ok=True)
                     save_checkpoint(checkpoint_path,
                                     {'rawnet': rawnet.state_dict(),
                                     'optim_rawnet': optim_rawnet.state_dict()})
