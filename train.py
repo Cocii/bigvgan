@@ -109,12 +109,12 @@ def train(rank, a, h):
         print("checkpoints directory : ", a.checkpoint_path)
 
     if os.path.isdir(a.checkpoint_path):
-        cp_g = scan_checkpoint(a.checkpoint_path, 'g_')
-        cp_do = scan_checkpoint(a.checkpoint_path, 'do_')
-        cp_tssd = scan_checkpoint(a.checkpoint_path, 'tssd_')
-        print(cp_g)
-        print(cp_do)
-        print(cp_tssd)
+        cp_g = scan_checkpoint(os.path.join(a.checkpoint_path, "generator"), 'g_')
+        cp_do = scan_checkpoint(os.path.join(a.checkpoint_path, "discriminator"), 'do_')
+        cp_tssd = scan_checkpoint(os.path.join(a.checkpoint_path, "tssd"), 'tssd_')
+        print("cp_g", cp_g)
+        print("cp_do", cp_do)
+        print("cp_tssd", cp_tssd)
 
     # load the latest checkpoint if exists
     steps = 0
