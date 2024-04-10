@@ -92,10 +92,12 @@ def train(rank, a, h):
         print("checkpoints directory : ", a.checkpoint_path)
 
     if os.path.isdir(a.checkpoint_path):
-        cp_g = scan_checkpoint(a.checkpoint_path, 'g_')
-        cp_do = scan_checkpoint(a.checkpoint_path, 'do_')
-        print(cp_g)
-        print(cp_do)
+        cp_g = scan_checkpoint(os.path.join(a.checkpoint_path, "generator"), 'g_')
+        cp_do = scan_checkpoint(os.path.join(a.checkpoint_path, "discriminator"), 'do_')
+        cp_rawnet = scan_checkpoint(os.path.join(a.checkpoint_path, "rawnet"), 'rawnet_')
+        print("cp_g", cp_g)
+        print("cp_do", cp_do)
+        print("cp_rawnet", cp_rawnet)
 
     # load the latest checkpoint if exists
     steps = 0
@@ -105,6 +107,8 @@ def train(rank, a, h):
     else:
         state_dict_g = load_checkpoint(cp_g, device)
         state_dict_do = load_checkpoint(cp_do, device)
+        state_dict_rawnet = load_checkpoint(cp_rawnet, device)
+        rawnet.load_state_dict(state_dict_rawnet['rawnet'])
         generator.load_state_dict(state_dict_g['generator'])
         mpd.load_state_dict(state_dict_do['mpd'])
         mrd.load_state_dict(state_dict_do['mrd'])
