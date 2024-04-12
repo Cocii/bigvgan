@@ -428,9 +428,15 @@ def train(rank, a, h):
                     with torch.no_grad():
                         mel_error = F.l1_loss(y_mel, y_g_hat_mel).item()
 
-                    print('Steps : {:d}, Gen Loss Total : {:4.3f}, Mel-Spec. Error : {:4.3f}, s/b : {:4.3f}, TSSD_loss : {:4.3f}'.
-                          format(steps, loss_gen_all, mel_error, time.time() - start_b, tssd_loss))
+                    log_str = 'Steps : {:d}, Gen Loss Total : {:4.3f}, Mel-Spec. Error : {:4.3f}, s/b : {:4.3f}, TSSD_loss : {:4.3f}'.format(
+                        steps, loss_gen_all, mel_error, time.time() - start_b, tssd_loss)
+                    print(log_str)
 
+                    # Write to txt file
+                    txt_file = os.path.join(a.checkpoint_path, 'training_log.txt')
+                    with open(txt_file, 'a') as f:
+                        f.write(log_str + '\n')
+                        
                 # checkpointing
                 if steps % (a.checkpoint_interval) == 0 and steps != 0:
                     checkpoint_path = "{}/g_{:08d}".format(os.path.join(a.checkpoint_path, "generator"), steps)
