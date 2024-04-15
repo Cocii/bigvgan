@@ -19,7 +19,7 @@ python train.py \
 --input_validation_file /workspace/BigVGAN/BigVGAN/LibriTTS_pair/validation.txt \
 --list_input_unseen_wavs_dir /workspace/BigVGAN/BigVGAN/LibriTTS_pair/real_audios \
 --list_input_unseen_validation_file /workspace/BigVGAN/BigVGAN/LibriTTS_pair/unseen.txt \
---config /workspace/BigVGAN/BigVGAN/bigvgan_22khz_80band/config.json \
+--config /workspace/BigVGAN/BigVGAN/bigvgan_22khz_80band/train_generator_rawnet_tssd/config.json \
 --checkpoint_path /workspace/BigVGAN/BigVGAN/bigvgan_22khz_80band/train_generator_rawnet_tssd \
 --fine_tuning True
 
