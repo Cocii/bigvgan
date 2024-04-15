@@ -125,7 +125,6 @@ def train(rank, a, h):
     win_len = config_rawnet['win_len']
     # config_rawnet['model_path'] =  f'/workspace/rawnet2_davide/rawnet_model/RawNet2_STRETCHED_FakeAVCeleb_22khz_{win_len}SEC.pth'
     rawnet = RawNet(config_rawnet['model'], 'cuda')
-    optim_rawnet = torch.optim.Adam(rawnet.parameters(), lr=config_rawnet['lr']) #, weight_decay=config['weight_decay'])
     rawnet = (rawnet).to('cuda')
     rawnet.apply(init_weights)
     criterion = nn.CrossEntropyLoss(label_smoothing=0.2)
@@ -163,8 +162,8 @@ def train(rank, a, h):
     if os.path.isdir(a.checkpoint_path):
         cp_g = scan_checkpoint(os.path.join(a.checkpoint_path, "generator"), 'g_')
         cp_do = scan_checkpoint(os.path.join(a.checkpoint_path, "discriminator"), 'do_')
-        cp_tssd = scan_checkpoint(os.path.join(a.checkpoint_path, "tssd"), 'tssd_')
-        cp_rawnet = scan_checkpoint(os.path.join(a.checkpoint_path, "rawnet"), 'rawnet_')
+        cp_tssd = "/workspace/BigVGAN/BigVGAN/bigvgan_22khz_80band/train_generator_rawnet_tssd/tssd/tssd_05300000"
+        cp_rawnet = "/workspace/BigVGAN/BigVGAN/bigvgan_22khz_80band/train_generator_rawnet_tssd/rawnet/rawnet_05300000"
         print("cp_g: ", cp_g)
         print("cp_do: ", cp_do)
         print("cp_tssd: ", cp_tssd)
@@ -203,14 +202,10 @@ def train(rank, a, h):
     if state_dict_do is not None:
         optim_g.load_state_dict(state_dict_do['optim_g'])
         optim_d.load_state_dict(state_dict_do['optim_d'])
-        optim_tssd.load_state_dict(state_dict_tssd['optimizer_state_dict'])
-        optim_rawnet.load_state_dict(state_dict_rawnet['optim_rawnet'])
 
 
     scheduler_g = torch.optim.lr_scheduler.ExponentialLR(optim_g, gamma=h.lr_decay, last_epoch=last_epoch)
     scheduler_d = torch.optim.lr_scheduler.ExponentialLR(optim_d, gamma=h.lr_decay, last_epoch=last_epoch)
-    scheduler_tssd = optim.lr_scheduler.ExponentialLR(optim_tssd, gamma=0.95)
-    scheduler_rawnet = optim.lr_scheduler.ExponentialLR(optim_rawnet, gamma=0.95)
 
 
     # define training and validation datasets
@@ -357,7 +352,6 @@ def train(rank, a, h):
         exit()
 
     # main training loop
-    tssdnet.train()
     generator.train()
     mpd.train()
     mrd.train()
@@ -397,8 +391,6 @@ def train(rank, a, h):
             labels_y_mixed = torch.cat((label_y_real, label_y_fake), dim=0)
             samples_mixed = torch.cat((samples_real, samples_fake), dim=0)
             
-
-            optim_tssd.zero_grad()
             # compute loss
             alpha = 0.1
             lam = np.random.beta(alpha, alpha)
@@ -421,15 +413,11 @@ def train(rank, a, h):
             probs_tssd = torch.cat((probs_tssd, row), dim=0)
             probs_tssds.extend(probs_tssd.detach().cpu().tolist())
 
-            tssd_loss_mixed.backward(retain_graph=True)
-            optim_tssd.step()
-
 
             ########################################
             #                Rawnet                #
             ########################################   
             # 1 for fake, 0 for real
-            optim_rawnet.zero_grad()
             samples_rawnet = samples_mixed
             random_indices = torch.randperm(len(samples_rawnet))
             samples_rawnet = samples_rawnet[random_indices]
@@ -444,10 +432,6 @@ def train(rank, a, h):
             probs_rawnet = torch.empty(0, 3).to(device)
             probs_rawnet = torch.cat((probs_rawnet, row), dim=0)
             probs_rawnets.extend(probs_rawnet.detach().cpu().tolist())
-
-            rawnet_loss.backward(retain_graph=True)
-            optim_rawnet.step()
-
 
             ########################################
             #                BigvGAN               #
@@ -493,13 +477,14 @@ def train(rank, a, h):
             loss_gen_s, losses_gen_s = generator_loss(y_ds_hat_g)
 
             if steps >= a.freeze_step:
-                loss_gen_all = loss_gen_s + loss_gen_f + loss_fm_s + loss_fm_f + loss_mel
+                loss_gen_all = loss_gen_s + loss_gen_f + loss_fm_s + loss_fm_f + loss_mel - 0.02*rawnet_loss
             else:
                 print("WARNING: using regression loss only for G for the first {} steps".format(a.freeze_step))
                 loss_gen_all = loss_mel
 
             loss_gen_all.backward()
             grad_norm_g = torch.nn.utils.clip_grad_norm_(generator.parameters(), 1000.)
+            
             optim_g.step()
 
             if rank == 0:
@@ -552,18 +537,18 @@ def train(rank, a, h):
                                                     'steps': steps,
                                                     'epoch': epoch})
 
-                    checkpoint_path = "{}/tssd_{:08d}".format(os.path.join(a.checkpoint_path, "tssd"), steps)
-                    os.makedirs(os.path.join(a.checkpoint_path, "tssd"), exist_ok=True)
-                    save_checkpoint(checkpoint_path, {'epoch': epoch,
-                                                    'model_state_dict': tssdnet.state_dict(),
-                                                    'optimizer_state_dict': optim_tssd.state_dict(),
-                                                    'scheduler_state_dict': scheduler_tssd.state_dict(),
-                                                    'loss': tssd_loss_mixed})
-                    checkpoint_path = "{}/rawnet{:08d}".format(os.path.join(a.checkpoint_path, "rawnet"), steps)
-                    os.makedirs(os.path.join(a.checkpoint_path, "rawnet"), exist_ok=True)
-                    save_checkpoint(checkpoint_path, {'model_state_dict': rawnet.state_dict(),
-                                                    'optim_rawnet': optim_rawnet.state_dict(),
-                                                    'scheduler_state_dict': scheduler_rawnet.state_dict()})
+                    # checkpoint_path = "{}/tssd_{:08d}".format(os.path.join(a.checkpoint_path, "tssd"), steps)
+                    # os.makedirs(os.path.join(a.checkpoint_path, "tssd"), exist_ok=True)
+                    # save_checkpoint(checkpoint_path, {'epoch': epoch,
+                    #                                 'model_state_dict': tssdnet.state_dict(),
+                    #                                 'optimizer_state_dict': optim_tssd.state_dict(),
+                    #                                 'scheduler_state_dict': scheduler_tssd.state_dict()})
+                    
+                    # checkpoint_path = "{}/rawnet_{:08d}".format(os.path.join(a.checkpoint_path, "rawnet"), steps)
+                    # os.makedirs(os.path.join(a.checkpoint_path, "rawnet"), exist_ok=True)
+                    # save_checkpoint(checkpoint_path, {'model_state_dict': rawnet.state_dict(),
+                    #                                 'optim_rawnet': optim_rawnet.state_dict(),
+                    #                                 'scheduler_state_dict': scheduler_rawnet.state_dict()})
                 # Tensorboard summary logging
                 if steps % a.summary_interval == 0:
                     sw.add_scalar("training/gen_loss_total", loss_gen_all, steps)
@@ -599,8 +584,6 @@ def train(rank, a, h):
 
         scheduler_g.step()
         scheduler_d.step()
-        scheduler_tssd.step()
-        scheduler_rawnet.step()
         
         # calculate the whole epoch EER
         eer_rawnet = cal_roc_eer(torch.tensor(probs_rawnets))
