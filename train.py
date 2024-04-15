@@ -559,7 +559,7 @@ def train(rank, a, h):
                                                     'optimizer_state_dict': optim_tssd.state_dict(),
                                                     'scheduler_state_dict': scheduler_tssd.state_dict(),
                                                     'loss': tssd_loss_mixed})
-                    checkpoint_path = "{}/rawnet{:08d}".format(os.path.join(a.checkpoint_path, "rawnet"), steps)
+                    checkpoint_path = "{}/rawnet_{:08d}".format(os.path.join(a.checkpoint_path, "rawnet"), steps)
                     os.makedirs(os.path.join(a.checkpoint_path, "rawnet"), exist_ok=True)
                     save_checkpoint(checkpoint_path, {'model_state_dict': rawnet.state_dict(),
                                                     'optim_rawnet': optim_rawnet.state_dict(),
