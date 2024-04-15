@@ -1,4 +1,7 @@
 import warnings
+
+import sklearn
+from sklearn.metrics import roc_curve
 warnings.simplefilter(action='ignore', category=FutureWarning)
 import itertools
 import os
@@ -28,6 +31,63 @@ import torch.nn as nn
 import yaml
 import numpy as np
 torch.backends.cudnn.benchmark = False
+
+def compute_eer(label, pred, pos_label):
+    # all fpr, tpr, fnr, fnr, threshold are lists (in the format of np.array)
+    fpr, tpr, threshold = sklearn.metrics.roc_curve(label, pred, pos_label=pos_label)
+    fnr = 1 - tpr
+
+    # the threshold of fnr == fpr
+    eer_threshold = threshold[np.nanargmin(np.absolute((fnr - fpr)))]
+
+    # theoretically eer from fpr and eer from fnr should be identical but they can be slightly differ in reality
+    eer_1 = fpr[np.nanargmin(np.absolute((fnr - fpr)))]
+    eer_2 = fnr[np.nanargmin(np.absolute((fnr - fpr)))]
+
+    # return the mean of eer from fpr and from fnr
+    eer = (eer_1 + eer_2) / 2
+    return eer
+
+def cal_roc_eer(probs):
+    """
+    probs: tensor, number of samples * 3, containing softmax probabilities
+    row wise: [genuine prob, fake prob, label]
+    TP: True Fake
+    FP: False Fake
+    """
+    all_labels = probs[:, 2]
+    zero_index = torch.nonzero((all_labels == 0)).squeeze(-1)
+    one_index = torch.nonzero(all_labels).squeeze(-1)
+    zero_probs = probs[zero_index, 0]
+    one_probs = probs[one_index, 0]
+
+    threshold_index = torch.linspace(-0.1, 1.01, 10000)
+    tpr = torch.zeros(len(threshold_index),)
+    fpr = torch.zeros(len(threshold_index),)
+    cnt = 0
+    for i in threshold_index:
+        tpr[cnt] = one_probs.le(i).sum().item()/len(one_probs)
+        fpr[cnt] = zero_probs.le(i).sum().item()/len(zero_probs)
+        cnt += 1
+
+    sum_rate = tpr + fpr
+    distance_to_one = torch.abs(sum_rate - 1)
+    eer_index = distance_to_one.argmin(dim=0).item()
+    out_eer = 0.5*(fpr[eer_index] + 1 - tpr[eer_index]).numpy()
+    return out_eer
+
+def cal_accuracy(probs):
+    correct = 0
+    total = 0 
+    for prob in probs:
+        prediction = 1 if prob[0] < prob[1] else 0
+        label = prob[2]
+        if prediction == label:
+            correct += 1
+        total += 1
+            
+    rawnet_accuracy = correct / total
+    return rawnet_accuracy
 
 def init_weights(module):
     if isinstance(module, nn.Linear):
@@ -59,23 +119,16 @@ def train(rank, a, h):
     device = torch.device('cuda:{:d}'.format(rank))
 
     # # define rawnet2 detector
-    # current_script_directory = os.path.dirname(os.path.abspath(__file__))
-    # config_path = os.path.join(current_script_directory, "configs", 'rawnet_config.yaml')
-    # config_rawnet = read_yaml(config_path)
-    # win_len = config_rawnet['win_len']
+    current_script_directory = os.path.dirname(os.path.abspath(__file__))
+    config_path = os.path.join(current_script_directory, "configs", 'rawnet_config.yaml')
+    config_rawnet = read_yaml(config_path)
+    win_len = config_rawnet['win_len']
     # config_rawnet['model_path'] =  f'/workspace/rawnet2_davide/rawnet_model/RawNet2_STRETCHED_FakeAVCeleb_22khz_{win_len}SEC.pth'
-    # rawnet = RawNet(config_rawnet['model'], 'cuda')
-    # optim_rawnet = torch.optim.Adam(rawnet.parameters(), lr=config_rawnet['lr']) #, weight_decay=config['weight_decay'])
-    # rawnet = (rawnet).to('cuda')
-    # rawnet.apply(init_weights)
-
-    # if os.path.exists(config_rawnet['model_path']):
-    #     checkpoint = torch.load(config_rawnet['model_path'], map_location='cuda')
-    #     rawnet.load_state_dict(checkpoint['model_state_dict'])
-    #     optim_rawnet.load_state_dict(checkpoint['optim_rawnet'])
-    #     print('RawNet2 model and optimizer loaded from {}'.format(config_rawnet['model_path']))
-
-    # criterion = nn.CrossEntropyLoss(label_smoothing=0.2)
+    rawnet = RawNet(config_rawnet['model'], 'cuda')
+    optim_rawnet = torch.optim.Adam(rawnet.parameters(), lr=config_rawnet['lr']) #, weight_decay=config['weight_decay'])
+    rawnet = (rawnet).to('cuda')
+    rawnet.apply(init_weights)
+    criterion = nn.CrossEntropyLoss(label_smoothing=0.2)
 
 
     # define tssdnet
@@ -86,7 +139,6 @@ def train(rank, a, h):
     print('Number of learnable params: {}.'.format(num_total_learnable_params))
 
     optim_tssd = optim.Adam(tssdnet.parameters(), lr=0.001)
-    scheduler_tssd = optim.lr_scheduler.ExponentialLR(optim_tssd, gamma=0.95)
     loss_type = 'mixup'  # {'WCE', 'mixup'}
 
 
@@ -112,9 +164,11 @@ def train(rank, a, h):
         cp_g = scan_checkpoint(os.path.join(a.checkpoint_path, "generator"), 'g_')
         cp_do = scan_checkpoint(os.path.join(a.checkpoint_path, "discriminator"), 'do_')
         cp_tssd = scan_checkpoint(os.path.join(a.checkpoint_path, "tssd"), 'tssd_')
-        print("cp_g", cp_g)
-        print("cp_do", cp_do)
-        print("cp_tssd", cp_tssd)
+        cp_rawnet = scan_checkpoint(os.path.join(a.checkpoint_path, "rawnet"), 'rawnet_')
+        print("cp_g: ", cp_g)
+        print("cp_do: ", cp_do)
+        print("cp_tssd: ", cp_tssd)
+        print("cp_rawnet: ", cp_rawnet)
 
     # load the latest checkpoint if exists
     steps = 0
@@ -125,10 +179,12 @@ def train(rank, a, h):
         state_dict_g = load_checkpoint(cp_g, device)
         state_dict_do = load_checkpoint(cp_do, device)
         state_dict_tssd = load_checkpoint(cp_tssd, device)
+        state_dict_rawnet = load_checkpoint(cp_rawnet, device)
         generator.load_state_dict(state_dict_g['generator'])
         mpd.load_state_dict(state_dict_do['mpd'])
         mrd.load_state_dict(state_dict_do['mrd'])
         tssdnet.load_state_dict(state_dict_tssd['model_state_dict'])
+        rawnet.load_state_dict(state_dict_rawnet['model_state_dict'])
         steps = state_dict_do['steps'] + 1
         last_epoch = state_dict_do['epoch']
 
@@ -148,10 +204,13 @@ def train(rank, a, h):
         optim_g.load_state_dict(state_dict_do['optim_g'])
         optim_d.load_state_dict(state_dict_do['optim_d'])
         optim_tssd.load_state_dict(state_dict_tssd['optimizer_state_dict'])
+        optim_rawnet.load_state_dict(state_dict_rawnet['optim_rawnet'])
 
 
     scheduler_g = torch.optim.lr_scheduler.ExponentialLR(optim_g, gamma=h.lr_decay, last_epoch=last_epoch)
     scheduler_d = torch.optim.lr_scheduler.ExponentialLR(optim_d, gamma=h.lr_decay, last_epoch=last_epoch)
+    scheduler_tssd = optim.lr_scheduler.ExponentialLR(optim_tssd, gamma=0.95)
+    scheduler_rawnet = optim.lr_scheduler.ExponentialLR(optim_rawnet, gamma=0.95)
 
 
     # define training and validation datasets
@@ -303,6 +362,8 @@ def train(rank, a, h):
     mpd.train()
     mrd.train()
     for epoch in range(max(0, last_epoch), a.training_epochs):
+        probs_tssds = []
+        probs_rawnets = []
         if rank == 0:
             start = time.time()
             print("Epoch: {}".format(epoch+1))
@@ -310,7 +371,7 @@ def train(rank, a, h):
         if h.num_gpus > 1:
             train_sampler.set_epoch(epoch)
 
-        for i, batch in enumerate(train_loader):
+        for i, batch in enumerate(tqdm(train_loader)):
             if rank == 0:
                 start_b = time.time()
             x, y, _, y_mel = batch
@@ -324,56 +385,76 @@ def train(rank, a, h):
                                           h.fmin, h.fmax_for_loss)
 
             ########################################
-            #                Rawnet                #
-            ########################################   
-            # 1 for fake, 0 for real
-            # optim_rawnet.zero_grad()
-
-            # batch_size = y_g_hat.size(0)
-            # label_y_fake = torch.ones(batch_size).type(torch.int64).to(device) # 1 for fake
-            # label_y_real = torch.zeros(batch_size).type(torch.int64).to(device) # 0 for real
-            # rawnet_out_real = rawnet(y.squeeze(1)) # ground truth
-            # rawnet_loss_real = criterion(rawnet_out_real, label_y_real)
-            # rawnet_out_fake = rawnet(y_g_hat.squeeze(1)) # audio generated by vocoder
-            # rawnet_loss_fake = criterion(rawnet_out_fake, label_y_fake)
-            # rawnet_loss = (rawnet_loss_real + rawnet_loss_fake) / 2
-            
-
-            ########################################
             #                 TSSD                 #
             ######################################## 
             # 1 for fake, 0 for real
-            optim_tssd.zero_grad()
+            
             batch_size = y_g_hat.size(0)
             label_y_fake = torch.ones(batch_size).type(torch.int64).to(device) # 1 for fake
             label_y_real = torch.zeros(batch_size).type(torch.int64).to(device) # 0 for real
             samples_real = y.squeeze(1)
             samples_fake = y_g_hat.squeeze(1)
+            labels_y_mixed = torch.cat((label_y_real, label_y_fake), dim=0)
+            samples_mixed = torch.cat((samples_real, samples_fake), dim=0)
+            
+
+            optim_tssd.zero_grad()
             # compute loss
             alpha = 0.1
             lam = np.random.beta(alpha, alpha)
             lam = torch.tensor(lam, requires_grad=False)
-            index_real = torch.randperm(len(label_y_real))
-            index_fake = torch.randperm(len(label_y_fake))
-            samples_real = lam*samples_real + (1-lam)*samples_real[index_real, :]
-            samples_fake = lam*samples_fake + (1-lam)*samples_fake[index_fake, :]
-            samples_real = samples_real.unsqueeze(1)
-            samples_fake = samples_fake.unsqueeze(1)
-            tssd_out_real = tssdnet(samples_real) # ground truth
-            tssd_out_fake = tssdnet(samples_fake) # audio generated by vocoder
-            labels_b_real = label_y_real[index_real]
-            labels_b_fake = label_y_fake[index_fake]
-            loss_real = lam * F.cross_entropy(tssd_out_real, label_y_real) + (1 - lam) * F.cross_entropy(tssd_out_real, labels_b_real)
-            loss_fake = lam * F.cross_entropy(tssd_out_fake, label_y_fake) + (1 - lam) * F.cross_entropy(tssd_out_fake, labels_b_fake)
-            tssd_loss = (loss_real + loss_fake) / 2
+
+            random_indices = torch.randperm(len(samples_mixed))
+            samples_random = lam*samples_mixed + (1-lam)*samples_mixed[random_indices, :]
+
+            samples_random = samples_random.unsqueeze(1)
+            tssd_out_mixed = tssdnet(samples_random)
+            labels_b_mixed = labels_y_mixed[random_indices]
+            
+            tssd_loss_mixed = lam * F.cross_entropy(tssd_out_mixed, labels_y_mixed) + (1 - lam) * F.cross_entropy(tssd_out_mixed, labels_b_mixed)
+
+            # compute tssd EER
+            t1_tssd = F.softmax(tssd_out_mixed, dim=1)
+            t2_tssd = labels_b_mixed.unsqueeze(-1)
+            row = torch.cat((t1_tssd, t2_tssd), dim=1)
+            probs_tssd = torch.empty(0, 3).to(device)
+            probs_tssd = torch.cat((probs_tssd, row), dim=0)
+            probs_tssds.extend(probs_tssd.detach().cpu().tolist())
+
+            tssd_loss_mixed.backward(retain_graph=True)
+            optim_tssd.step()
+
+
+            ########################################
+            #                Rawnet                #
+            ########################################   
+            # 1 for fake, 0 for real
+            optim_rawnet.zero_grad()
+            samples_rawnet = samples_mixed
+            random_indices = torch.randperm(len(samples_rawnet))
+            samples_rawnet = samples_rawnet[random_indices]
+            labels_y_rawnet = labels_y_mixed[random_indices]
+            rawnet_out = rawnet(samples_rawnet)
+            rawnet_loss = criterion(rawnet_out, labels_y_rawnet)
+
+            # compute rawnet EER
+            t1_rawnet = F.softmax(rawnet_out, dim=1)
+            t2_rawnet = labels_y_rawnet.unsqueeze(-1)
+            row = torch.cat((t1_rawnet, t2_rawnet), dim=1)
+            probs_rawnet = torch.empty(0, 3).to(device)
+            probs_rawnet = torch.cat((probs_rawnet, row), dim=0)
+            probs_rawnets.extend(probs_rawnet.detach().cpu().tolist())
+
+            rawnet_loss.backward(retain_graph=True)
+            optim_rawnet.step()
 
 
             ########################################
             #                BigvGAN               #
             ######################################## 
-
             # discriminator 
             optim_d.zero_grad()
+
             # MPD
             y_df_hat_r, y_df_hat_g, _, _ = mpd(y, y_g_hat.detach())
             loss_disc_f, losses_disc_f_r, losses_disc_f_g = discriminator_loss(y_df_hat_r, y_df_hat_g)
@@ -412,7 +493,7 @@ def train(rank, a, h):
             loss_gen_s, losses_gen_s = generator_loss(y_ds_hat_g)
 
             if steps >= a.freeze_step:
-                loss_gen_all = loss_gen_s + loss_gen_f + loss_fm_s + loss_fm_f + loss_mel + 0.02*tssd_loss
+                loss_gen_all = loss_gen_s + loss_gen_f + loss_fm_s + loss_fm_f + loss_mel
             else:
                 print("WARNING: using regression loss only for G for the first {} steps".format(a.freeze_step))
                 loss_gen_all = loss_mel
@@ -420,20 +501,39 @@ def train(rank, a, h):
             loss_gen_all.backward()
             grad_norm_g = torch.nn.utils.clip_grad_norm_(generator.parameters(), 1000.)
             optim_g.step()
-            optim_tssd.step()
 
             if rank == 0:
+                # if steps % 100 == 0: # just for test
+                #     break
+                #     eer_rawnet = cal_roc_eer(torch.tensor(probs_rawnets))
+                #     eer_tssd = cal_roc_eer(torch.tensor(probs_tssds))
+                #     eer_rawnet1 = compute_eer(np.array(probs_rawnets)[:, 2], np.array(probs_rawnets)[:, 0], 1)
+                #     eer_tssd1 = compute_eer(np.array(probs_tssds)[:, 2], np.array(probs_tssds)[:, 0], 1)
+                #     eer_rawnet0 = compute_eer(np.array(probs_rawnets)[:, 2], np.array(probs_rawnets)[:, 0], 0)
+                #     eer_tssd0 = compute_eer(np.array(probs_tssds)[:, 2], np.array(probs_tssds)[:, 0], 0)
+                #     log_str = 'Epoch: {:d}, Steps : {:d}, TSSD_EER : {:4.5f}, TSSD_EER1 : {:4.5f}, TSSD_EER0 : {:4.5f}, Rawnet_EER : {:4.5f}, Rawnet_EER1 : {:4.5f}, Rawnet_EER0 : {:4.5f}'.format(
+                #                     epoch, steps, eer_tssd, eer_tssd1, eer_tssd0, eer_rawnet, eer_rawnet1, eer_rawnet0)
+                #     log_dir = os.path.join(a.checkpoint_path, 'loss_log')
+                #     os.makedirs(log_dir, exist_ok=True)
+                #     txt_file = os.path.join(log_dir, 'eer_log.txt')
+                #     with open(txt_file, 'a') as f:
+                #         f.write(log_str + '\n')
+
                 # STDOUT logging
                 if steps % a.stdout_interval == 0:
                     with torch.no_grad():
                         mel_error = F.l1_loss(y_mel, y_g_hat_mel).item()
 
-                    log_str = 'Steps : {:d}, Gen Loss Total : {:4.3f}, Mel-Spec. Error : {:4.3f}, s/b : {:4.3f}, TSSD_loss : {:4.3f}'.format(
-                        steps, loss_gen_all, mel_error, time.time() - start_b, tssd_loss)
+                    log_str = 'Steps : {:d}, Gen Loss Total : {:4.3f}, Mel-Spec. Error : {:4.3f}, s/b : {:4.3f}'.format(
+                        steps, loss_gen_all, mel_error, time.time() - start_b)
+                    log_loss = ', TSSD_loss : {:4.3f}, RawNet_loss : {:4.3f}'.format(tssd_loss_mixed, rawnet_loss)
+                    log_str = log_str + log_loss
                     print(log_str)
 
                     # Write to txt file
-                    txt_file = os.path.join(a.checkpoint_path, 'training_log.txt')
+                    log_dir = os.path.join(a.checkpoint_path, 'loss_log')
+                    os.makedirs(log_dir, exist_ok=True)
+                    txt_file = os.path.join(log_dir, 'training_log.txt')
                     with open(txt_file, 'a') as f:
                         f.write(log_str + '\n')
                         
@@ -458,7 +558,12 @@ def train(rank, a, h):
                                                     'model_state_dict': tssdnet.state_dict(),
                                                     'optimizer_state_dict': optim_tssd.state_dict(),
                                                     'scheduler_state_dict': scheduler_tssd.state_dict(),
-                                                    'loss': tssd_loss})
+                                                    'loss': tssd_loss_mixed})
+                    checkpoint_path = "{}/rawnet{:08d}".format(os.path.join(a.checkpoint_path, "rawnet"), steps)
+                    os.makedirs(os.path.join(a.checkpoint_path, "rawnet"), exist_ok=True)
+                    save_checkpoint(checkpoint_path, {'model_state_dict': rawnet.state_dict(),
+                                                    'optim_rawnet': optim_rawnet.state_dict(),
+                                                    'scheduler_state_dict': scheduler_rawnet.state_dict()})
                 # Tensorboard summary logging
                 if steps % a.summary_interval == 0:
                     sw.add_scalar("training/gen_loss_total", loss_gen_all, steps)
@@ -495,6 +600,24 @@ def train(rank, a, h):
         scheduler_g.step()
         scheduler_d.step()
         scheduler_tssd.step()
+        scheduler_rawnet.step()
+        
+        # calculate the whole epoch EER
+        eer_rawnet = cal_roc_eer(torch.tensor(probs_rawnets))
+        eer_tssd = cal_roc_eer(torch.tensor(probs_tssds))
+        eer_rawnet1 = compute_eer(np.array(probs_rawnets)[:, 2], np.array(probs_rawnets)[:, 0], 1)
+        eer_tssd1 = compute_eer(np.array(probs_tssds)[:, 2], np.array(probs_tssds)[:, 0], 1)
+        eer_rawnet0 = compute_eer(np.array(probs_rawnets)[:, 2], np.array(probs_rawnets)[:, 0], 0)
+        eer_tssd0 = compute_eer(np.array(probs_tssds)[:, 2], np.array(probs_tssds)[:, 0], 0)
+        accuracy_tssd = cal_accuracy(probs_tssds)
+        accuracy_rawnet = cal_accuracy(probs_rawnets)
+        log_str = 'Epoch: {:d}, Steps : {:d}, TSSD_EER : {:4.5f}, TSSD_Accuracy : {:4.5f}, Rawnet_EER : {:4.5f}, Rawnet_Accuracy : {:4.5f}, TSSD_EER1 : {:4.5f}, TSSD_EER0 : {:4.5f}, Rawnet_EER1 : {:4.5f}, Rawnet_EER0 : {:4.5f}'.format(
+                        epoch, steps, eer_tssd, accuracy_tssd, eer_rawnet, accuracy_rawnet, eer_tssd1, eer_tssd0, eer_rawnet1, eer_rawnet0)
+        log_dir = os.path.join(a.checkpoint_path, 'loss_log')
+        os.makedirs(log_dir, exist_ok=True)
+        txt_file = os.path.join(log_dir, 'eer_log.txt')
+        with open(txt_file, 'a') as f:
+            f.write(log_str + '\n')
         
         if rank == 0:
             print('Time taken for epoch {} is {} sec\n'.format(epoch + 1, int(time.time() - start)))
