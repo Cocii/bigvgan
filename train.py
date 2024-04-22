@@ -596,14 +596,16 @@ def train(rank, a, h):
         bal_acc_rawnet = balanced_accuracy_score(np.array(probs_rawnets)[:, 2], np.argmax(np.array(probs_rawnets)[:, :2], axis=1))
         bal_acc_tssd = balanced_accuracy_score(np.array(probs_tssds)[:, 2], np.argmax(np.array(probs_tssds)[:, :2], axis=1))
 
-        tssd_str = 'Epoch: {:d}, Steps : {:d}, TSSD_EER : {:4.5f}, TSSD_Accuracy : {:4.5f}, TSSD_AUC : {:4.5f}, TSSD_Bal_acc : {:4.5f}, '.format(
-                        epoch, steps, eer_tssd, accuracy_tssd, auc_tssd, bal_acc_tssd)
+        epoch_str = 'Epoch: {:d}, Steps : {:d}, '.format(
+                        epoch, steps)
+        tssd_str = '    TSSD_EER : {:4.5f}, TSSD_Accuracy : {:4.5f}, TSSD_AUC : {:4.5f}, TSSD_Bal_acc : {:4.5f}, '.format(
+                        eer_tssd, accuracy_tssd, auc_tssd, bal_acc_tssd)
         raw_str = '    Rawnet_EER : {:4.5f}, Rawnet_Accuracy : {:4.5f}, Rawnet_AUC : {:4.5f}, Rawnet_Bal_acc : {:4.5f}, '.format(
                         eer_rawnet, accuracy_rawnet, auc_rawnet, bal_acc_rawnet)
         add_str = '    TSSD_EER1 : {:4.5f}, TSSD_EER0 : {:4.5f}, Rawnet_EER1 : {:4.5f}, Rawnet_EER0 : {:4.5f}'.format(
                         eer_tssd1, eer_tssd0, eer_rawnet1, eer_rawnet0)
         
-        log_str = tssd_str+'\n'+raw_str+'\n'+add_str
+        log_str = epoch_str+'\n'+tssd_str+'\n'+raw_str+'\n'+add_str
 
         # log_str = 'Epoch: {:d}, Steps : {:d}, TSSD_EER : {:4.5f}, TSSD_Accuracy : {:4.5f}, TSSD_AUC : {:4.5f}, TSSD_Bal_acc : {:4.5f}, Rawnet_EER : {:4.5f}, Rawnet_Accuracy : {:4.5f}, Rawnet_AUC : {:4.5f}, Rawnet_Bal_acc : {:4.5f}, TSSD_EER1 : {:4.5f}, TSSD_EER0 : {:4.5f}, Rawnet_EER1 : {:4.5f}, Rawnet_EER0 : {:4.5f}'.format(
                         # epoch, steps, eer_tssd, accuracy_tssd, auc_tssd, bal_acc_tssd, eer_rawnet, accuracy_rawnet, auc_rawnet, bal_acc_rawnet, eer_tssd1, eer_tssd0, eer_rawnet1, eer_rawnet0)
