@@ -30,6 +30,7 @@ from tssd_model import SSDNet1D
 import torch.nn as nn
 import yaml
 import numpy as np
+from sklearn.metrics import balanced_accuracy_score, roc_auc_score
 torch.backends.cudnn.benchmark = False
 
 def compute_eer(label, pred, pos_label):
@@ -611,8 +612,25 @@ def train(rank, a, h):
         eer_tssd0 = compute_eer(np.array(probs_tssds)[:, 2], np.array(probs_tssds)[:, 0], 0)
         accuracy_tssd = cal_accuracy(probs_tssds)
         accuracy_rawnet = cal_accuracy(probs_rawnets)
-        log_str = 'Epoch: {:d}, Steps : {:d}, TSSD_EER : {:4.5f}, TSSD_Accuracy : {:4.5f}, Rawnet_EER : {:4.5f}, Rawnet_Accuracy : {:4.5f}, TSSD_EER1 : {:4.5f}, TSSD_EER0 : {:4.5f}, Rawnet_EER1 : {:4.5f}, Rawnet_EER0 : {:4.5f}'.format(
-                        epoch, steps, eer_tssd, accuracy_tssd, eer_rawnet, accuracy_rawnet, eer_tssd1, eer_tssd0, eer_rawnet1, eer_rawnet0)
+
+        auc_rawnet = roc_auc_score(np.array(probs_rawnets)[:, 2], np.array(probs_rawnets)[:, 0])
+        auc_tssd = roc_auc_score(np.array(probs_tssds)[:, 2], np.array(probs_tssds)[:, 0])
+        bal_acc_rawnet = balanced_accuracy_score(np.array(probs_rawnets)[:, 2], np.argmax(np.array(probs_rawnets)[:, :2], axis=1))
+        bal_acc_tssd = balanced_accuracy_score(np.array(probs_tssds)[:, 2], np.argmax(np.array(probs_tssds)[:, :2], axis=1))
+
+        epoch_str = 'Epoch: {:d}, Steps : {:d}, '.format(
+                        epoch, steps)
+        tssd_str = '    TSSD_EER : {:4.5f}, TSSD_Accuracy : {:4.5f}, TSSD_AUC : {:4.5f}, TSSD_Bal_acc : {:4.5f}, '.format(
+                        eer_tssd, accuracy_tssd, auc_tssd, bal_acc_tssd)
+        raw_str = '    Rawnet_EER : {:4.5f}, Rawnet_Accuracy : {:4.5f}, Rawnet_AUC : {:4.5f}, Rawnet_Bal_acc : {:4.5f}, '.format(
+                        eer_rawnet, accuracy_rawnet, auc_rawnet, bal_acc_rawnet)
+        add_str = '    TSSD_EER1 : {:4.5f}, TSSD_EER0 : {:4.5f}, Rawnet_EER1 : {:4.5f}, Rawnet_EER0 : {:4.5f}'.format(
+                        eer_tssd1, eer_tssd0, eer_rawnet1, eer_rawnet0)
+        
+        log_str = epoch_str+'\n'+tssd_str+'\n'+raw_str+'\n'+add_str
+
+        # log_str = 'Epoch: {:d}, Steps : {:d}, TSSD_EER : {:4.5f}, TSSD_Accuracy : {:4.5f}, TSSD_AUC : {:4.5f}, TSSD_Bal_acc : {:4.5f}, Rawnet_EER : {:4.5f}, Rawnet_Accuracy : {:4.5f}, Rawnet_AUC : {:4.5f}, Rawnet_Bal_acc : {:4.5f}, TSSD_EER1 : {:4.5f}, TSSD_EER0 : {:4.5f}, Rawnet_EER1 : {:4.5f}, Rawnet_EER0 : {:4.5f}'.format(
+                        # epoch, steps, eer_tssd, accuracy_tssd, auc_tssd, bal_acc_tssd, eer_rawnet, accuracy_rawnet, auc_rawnet, bal_acc_rawnet, eer_tssd1, eer_tssd0, eer_rawnet1, eer_rawnet0)
         log_dir = os.path.join(a.checkpoint_path, 'loss_log')
         os.makedirs(log_dir, exist_ok=True)
         txt_file = os.path.join(log_dir, 'eer_log.txt')
