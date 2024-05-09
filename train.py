@@ -26,11 +26,36 @@ from tqdm import tqdm
 import auraloss
 from rawnet_model import RawNet
 from tssd_model import SSDNet1D
+from AASIST import aasist
 import torch.nn as nn
 import yaml
 import numpy as np
 from sklearn.metrics import balanced_accuracy_score, roc_auc_score
 torch.backends.cudnn.benchmark = False
+
+def cosine_annealing(step, total_steps, lr_max, lr_min):
+    """Cosine Annealing for learning rate decay scheduler"""
+    return lr_min + (lr_max -
+                     lr_min) * 0.5 * (1 + np.cos(step / total_steps * np.pi))
+
+def str_to_bool(val):
+    """Convert a string representation of truth to true (1) or false (0).
+    Copied from the python implementation distutils.utils.strtobool
+
+    True values are 'y', 'yes', 't', 'true', 'on', and '1'; false values
+    are 'n', 'no', 'f', 'false', 'off', and '0'.  Raises ValueError if
+    'val' is anything else.
+    >>> str_to_bool('YES')
+    1
+    >>> str_to_bool('FALSE')
+    0
+    """
+    val = val.lower()
+    if val in ('y', 'yes', 't', 'true', 'on', '1'):
+        return True
+    if val in ('n', 'no', 'f', 'false', 'off', '0'):
+        return False
+    raise ValueError('invalid truth value {}'.format(val))
 
 def compute_eer(label, pred, pos_label):
     # all fpr, tpr, fnr, fnr, threshold are lists (in the format of np.array)
@@ -118,24 +143,28 @@ def train(rank, a, h):
     torch.cuda.set_device(rank)
     device = torch.device('cuda:{:d}'.format(rank))
 
-    # # define rawnet2 detector
+    ## define rawnet2 detector
     current_script_directory = os.path.dirname(os.path.abspath(__file__))
     config_path = os.path.join(current_script_directory, "configs", 'rawnet_config.yaml')
     config_rawnet = read_yaml(config_path)
-    win_len = config_rawnet['win_len']
-    # config_rawnet['model_path'] =  f'/workspace/rawnet2_davide/rawnet_model/RawNet2_STRETCHED_FakeAVCeleb_22khz_{win_len}SEC.pth'
-    rawnet = RawNet(config_rawnet['model'], 'cuda')
-    rawnet = (rawnet).to('cuda')
+    rawnet = RawNet(config_rawnet['model'],device)
+    rawnet = (rawnet).to(device)
     rawnet.apply(init_weights)
     criterion = nn.CrossEntropyLoss(label_smoothing=0.2)
 
-
-    # define tssdnet
+    ## define tssdnet
     tssdnet = SSDNet1D()
     tssdnet = tssdnet.to(device)
-
     num_total_learnable_params = sum(i.numel() for i in tssdnet.parameters() if i.requires_grad)
     print('Number of learnable params: {}.'.format(num_total_learnable_params))
+
+    ## define aasistnet
+    aasist_config_path = os.path.join(current_script_directory, "configs", 'aasis_config.conf')
+    with open(aasist_config_path, "r") as f_json:
+        aasist_config = json.loads(f_json.read())
+    aasistnet = aasist(aasist_config["model_config"]).to(device)
+    aasist_optim_config = aasist_config["optim_config"]
+    print("aasistnet params: {}".format(sum(p.numel() for p in aasistnet.parameters())))
 
     # define BigVGAN generator
     generator = BigVGAN(h).to(device)
@@ -158,12 +187,14 @@ def train(rank, a, h):
     if os.path.isdir(a.checkpoint_path):
         cp_g = scan_checkpoint(os.path.join(a.checkpoint_path, "generator"), 'g_')
         cp_do = scan_checkpoint(os.path.join(a.checkpoint_path, "discriminator"), 'do_')
-        cp_tssd = "/workspace/BigVGAN/BigVGAN/bigvgan_22khz_80band/detect_experiment1/tssd/tssd_06000000" 
-        cp_rawnet = "/workspace/BigVGAN/BigVGAN/bigvgan_22khz_80band/detect_experiment1/rawnet/rawnet_06000000"
+        cp_tssd = scan_checkpoint(os.path.join(a.checkpoint_path, "tssd"), 'tssd_')
+        cp_rawnet = scan_checkpoint(os.path.join(a.checkpoint_path, "rawnet"), 'rawnet_')
+        cp_aasist = scan_checkpoint(os.path.join(a.checkpoint_path, "aasist"), 'aasist_')
         print("cp_g: ", cp_g)
         print("cp_do: ", cp_do)
         print("cp_tssd: ", cp_tssd)
         print("cp_rawnet: ", cp_rawnet)
+        print("cp_aasist: ", cp_aasist)
 
     # load the latest checkpoint if exists
     steps = 0
@@ -175,11 +206,13 @@ def train(rank, a, h):
         state_dict_do = load_checkpoint(cp_do, device)
         state_dict_tssd = load_checkpoint(cp_tssd, device)
         state_dict_rawnet = load_checkpoint(cp_rawnet, device)
+        state_dict_aasist = load_checkpoint(cp_aasist, device)
         generator.load_state_dict(state_dict_g['generator'])
         mpd.load_state_dict(state_dict_do['mpd'])
         mrd.load_state_dict(state_dict_do['mrd'])
         tssdnet.load_state_dict(state_dict_tssd['model_state_dict'])
         rawnet.load_state_dict(state_dict_rawnet['model_state_dict'])
+        aasistnet.load_state_dict(state_dict_aasist['aasist'])
         steps = state_dict_do['steps'] + 1
         last_epoch = state_dict_do['epoch']
 
@@ -193,11 +226,18 @@ def train(rank, a, h):
     optim_g = torch.optim.AdamW(generator.parameters(), h.learning_rate, betas=[h.adam_b1, h.adam_b2])
     optim_d = torch.optim.AdamW(itertools.chain(mrd.parameters(), mpd.parameters()),
                                 h.learning_rate, betas=[h.adam_b1, h.adam_b2])
+    optim_aasist = torch.optim.Adam(aasistnet.parameters(),
+                                     lr=aasist_optim_config['base_lr'],
+                                     betas=aasist_optim_config['betas'],
+                                     weight_decay=aasist_optim_config['weight_decay'],
+                                     amsgrad=str_to_bool(
+                                         aasist_optim_config['amsgrad']))
     
-
+    ## optimizers definition
     if state_dict_do is not None:
         optim_g.load_state_dict(state_dict_do['optim_g'])
         optim_d.load_state_dict(state_dict_do['optim_d'])
+        optim_aasist.load_state_dict(state_dict_aasist['optim_aasist'])
 
 
     scheduler_g = torch.optim.lr_scheduler.ExponentialLR(optim_g, gamma=h.lr_decay, last_epoch=last_epoch)
@@ -209,6 +249,19 @@ def train(rank, a, h):
     # example: trained on LibriTTS, validate on VCTK
     training_filelist, validation_filelist, list_unseen_validation_filelist = get_dataset_filelist(a)
 
+
+    aasist_optim_config["epochs"] = 1
+    aasist_optim_config["steps_per_epoch"] = len(training_filelist)
+    total_steps = aasist_optim_config['epochs'] * \
+            aasist_optim_config['steps_per_epoch']
+    scheduler_aasist = torch.optim.lr_scheduler.LambdaLR(
+            optim_aasist,
+            lr_lambda=lambda step: cosine_annealing(
+                step,
+                total_steps,
+                1,  # since lr_lambda computes multiplicative factor
+                aasist_optim_config['lr_min'] / aasist_optim_config['base_lr']))
+    
     trainset = MelDataset(training_filelist, h, h.segment_size, h.n_fft, h.num_mels,
                           h.hop_size, h.win_size, h.sampling_rate, h.fmin, h.fmax, n_cache_reuse=0,
                           shuffle=False if h.num_gpus > 1 else True, fmax_loss=h.fmax_for_loss, device=device,
@@ -348,12 +401,14 @@ def train(rank, a, h):
         exit()
 
     # main training loop
+    aasistnet.train()
     generator.train()
     mpd.train()
     mrd.train()
     for epoch in range(max(0, last_epoch), a.training_epochs):
         probs_tssds = []
         probs_rawnets = []
+        probs_aasist = []
         if rank == 0:
             start = time.time()
             print("Epoch: {}".format(epoch+1))
@@ -387,7 +442,7 @@ def train(rank, a, h):
             labels_y_mixed = torch.cat((label_y_real, label_y_fake), dim=0)
             samples_mixed = torch.cat((samples_real, samples_fake), dim=0)
             
-            # compute loss
+            # compute tssd loss
             alpha = 0.1
             lam = np.random.beta(alpha, alpha)
             lam = torch.tensor(lam, requires_grad=False)
@@ -396,10 +451,11 @@ def train(rank, a, h):
             samples_random = lam*samples_mixed + (1-lam)*samples_mixed[random_indices, :]
 
             samples_random = samples_random.unsqueeze(1)
-            tssd_out_mixed = tssdnet(samples_random)
             labels_b_mixed = labels_y_mixed[random_indices]
-            
-            tssd_loss_mixed = lam * F.cross_entropy(tssd_out_mixed, labels_y_mixed) + (1 - lam) * F.cross_entropy(tssd_out_mixed, labels_b_mixed)
+            tssd_out_mixed = tssdnet(samples_random)
+            labels_random = lam * labels_y_mixed + (1 - lam) * labels_b_mixed
+            tssd_loss_mixed = F.cross_entropy(tssd_loss_mixed, labels_random)
+            # tssd_loss_mixed = lam * F.cross_entropy(tssd_out_mixed, labels_y_mixed) + (1 - lam) * F.cross_entropy(tssd_out_mixed, labels_b_mixed)
 
             # compute tssd EER
             t1_tssd = F.softmax(tssd_out_mixed, dim=1)
@@ -413,6 +469,7 @@ def train(rank, a, h):
             ########################################
             #                Rawnet                #
             ########################################   
+
             # 1 for fake, 0 for real
             samples_rawnet = samples_mixed
             random_indices = torch.randperm(len(samples_rawnet))
@@ -428,6 +485,28 @@ def train(rank, a, h):
             probs_rawnet = torch.empty(0, 3).to(device)
             probs_rawnet = torch.cat((probs_rawnet, row), dim=0)
             probs_rawnets.extend(probs_rawnet.detach().cpu().tolist())
+            
+
+            ########################################
+            #                Aasist                #
+            ########################################   
+
+            # 1 for fake, 0 for real
+            samples_rawnet = samples_mixed
+            random_indices = torch.randperm(len(samples_rawnet))
+            samples_rawnet = samples_rawnet[random_indices]
+            labels_y_rawnet = labels_y_mixed[random_indices]
+            rawnet_out = rawnet(samples_rawnet)
+            rawnet_loss = criterion(rawnet_out, labels_y_rawnet)
+
+            # compute rawnet EER
+            t1_rawnet = F.softmax(rawnet_out, dim=1)
+            t2_rawnet = labels_y_rawnet.unsqueeze(-1)
+            row = torch.cat((t1_rawnet, t2_rawnet), dim=1)
+            probs_rawnet = torch.empty(0, 3).to(device)
+            probs_rawnet = torch.cat((probs_rawnet, row), dim=0)
+            probs_rawnets.extend(probs_rawnet.detach().cpu().tolist())
+
 
             ########################################
             #                BigvGAN               #
@@ -584,13 +663,10 @@ def train(rank, a, h):
         # calculate the whole epoch EER
         eer_rawnet = cal_roc_eer(torch.tensor(probs_rawnets))
         eer_tssd = cal_roc_eer(torch.tensor(probs_tssds))
-        eer_rawnet1 = compute_eer(np.array(probs_rawnets)[:, 2], np.array(probs_rawnets)[:, 0], 1)
-        eer_tssd1 = compute_eer(np.array(probs_tssds)[:, 2], np.array(probs_tssds)[:, 0], 1)
         eer_rawnet0 = compute_eer(np.array(probs_rawnets)[:, 2], np.array(probs_rawnets)[:, 0], 0)
         eer_tssd0 = compute_eer(np.array(probs_tssds)[:, 2], np.array(probs_tssds)[:, 0], 0)
         accuracy_tssd = cal_accuracy(probs_tssds)
         accuracy_rawnet = cal_accuracy(probs_rawnets)
-
         auc_rawnet = roc_auc_score(np.array(probs_rawnets)[:, 2], np.array(probs_rawnets)[:, 0])
         auc_tssd = roc_auc_score(np.array(probs_tssds)[:, 2], np.array(probs_tssds)[:, 0])
         bal_acc_rawnet = balanced_accuracy_score(np.array(probs_rawnets)[:, 2], np.argmax(np.array(probs_rawnets)[:, :2], axis=1))
@@ -599,11 +675,10 @@ def train(rank, a, h):
         epoch_str = 'Epoch: {:d}, Steps : {:d}, '.format(
                         epoch, steps)
         tssd_str = '    TSSD_EER : {:4.5f}, TSSD_Accuracy : {:4.5f}, TSSD_AUC : {:4.5f}, TSSD_Bal_acc : {:4.5f}, '.format(
-                        eer_tssd, accuracy_tssd, auc_tssd, bal_acc_tssd)
+                        eer_tssd, accuracy_tssd, 1-auc_tssd, bal_acc_tssd)
         raw_str = '    Rawnet_EER : {:4.5f}, Rawnet_Accuracy : {:4.5f}, Rawnet_AUC : {:4.5f}, Rawnet_Bal_acc : {:4.5f}, '.format(
-                        eer_rawnet, accuracy_rawnet, auc_rawnet, bal_acc_rawnet)
-        add_str = '    TSSD_EER1 : {:4.5f}, TSSD_EER0 : {:4.5f}, Rawnet_EER1 : {:4.5f}, Rawnet_EER0 : {:4.5f}'.format(
-                        eer_tssd1, eer_tssd0, eer_rawnet1, eer_rawnet0)
+                        eer_rawnet, accuracy_rawnet, 1-auc_rawnet, bal_acc_rawnet)
+        add_str = '    TSSD_EER0 : {:4.5f}, Rawnet_EER0 : {:4.5f}'.format(eer_tssd0, eer_rawnet0)
         
         log_str = epoch_str+'\n'+tssd_str+'\n'+raw_str+'\n'+add_str
 
