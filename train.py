@@ -473,10 +473,10 @@ def train(rank, a, h):
             loss_gen_s, losses_gen_s = generator_loss(y_ds_hat_g)
 
             if steps >= a.freeze_step:
-                loss_gen_all = loss_gen_s + loss_gen_f + loss_fm_s + loss_fm_f + loss_mel - 0.02*rawnet_loss
+                loss_gen_all = loss_gen_s + loss_gen_f + loss_fm_s + loss_fm_f + loss_mel - 0.02*rawnet_loss - 0.02*tssd_loss_mixed
             else:
                 print("WARNING: using regression loss only for G for the first {} steps".format(a.freeze_step))
-                loss_gen_all = loss_mel - 0.02*rawnet_loss
+                loss_gen_all = loss_mel - 0.02*rawnet_loss - 0.02*tssd_loss_mixed
 
             loss_gen_all.backward()
             grad_norm_g = torch.nn.utils.clip_grad_norm_(generator.parameters(), 1000.)

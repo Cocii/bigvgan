@@ -1,0 +1,1 @@
+python /workspace/BigVGAN/BigVGAN/inference.py --input_wavs_dir "/workspace/BigVGAN/BigVGAN/test_files/input" --output_dir "/workspace/BigVGAN/BigVGAN/test_files/output" --checkpoint_file "/workspace/BigVGAN/BigVGAN/bigvgan_22khz_80band/detect_experiment1/generator/g_06000000"

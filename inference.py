@@ -54,7 +54,7 @@ def inference(a, h):
     with torch.no_grad():
         for i, filname in enumerate(filelist):
             # load the ground truth audio and resample if necessary
-            wav, sr = librosa.load(os.path.join(a.input_wavs_dir, filname), h.sampling_rate, mono=True)
+            wav, sr = librosa.load(os.path.join(a.input_wavs_dir, filname))
             wav = torch.FloatTensor(wav).to(device)
             # compute mel spectrogram from the ground truth audio
             x = get_mel(wav.unsqueeze(0))
