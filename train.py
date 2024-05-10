@@ -142,9 +142,9 @@ def train(rank, a, h):
     torch.cuda.manual_seed(h.seed)
     torch.cuda.set_device(rank)
     device = torch.device('cuda:{:d}'.format(rank))
+    current_script_directory = os.path.dirname(os.path.abspath(__file__))
 
     ## define rawnet2 detector
-    current_script_directory = os.path.dirname(os.path.abspath(__file__))
     config_path = os.path.join(current_script_directory, "configs", 'rawnet_config.yaml')
     config_rawnet = read_yaml(config_path)
     rawnet = RawNet(config_rawnet['model'],device)
@@ -157,6 +157,7 @@ def train(rank, a, h):
     tssdnet = tssdnet.to(device)
     num_total_learnable_params = sum(i.numel() for i in tssdnet.parameters() if i.requires_grad)
     print('Number of learnable params: {}.'.format(num_total_learnable_params))
+    optim_tssd = optim.Adam(tssdnet.parameters(), lr=0.001)
 
     ## define aasistnet
     aasist_config_path = os.path.join(current_script_directory, "configs", 'aasis_config.conf')
@@ -188,12 +189,12 @@ def train(rank, a, h):
         cp_g = scan_checkpoint(os.path.join(a.checkpoint_path, "generator"), 'g_')
         cp_do = scan_checkpoint(os.path.join(a.checkpoint_path, "discriminator"), 'do_')
         cp_tssd = scan_checkpoint(os.path.join(a.checkpoint_path, "tssd"), 'tssd_')
-        cp_rawnet = scan_checkpoint(os.path.join(a.checkpoint_path, "rawnet"), 'rawnet_')
+        # cp_rawnet = scan_checkpoint(os.path.join(a.checkpoint_path, "rawnet"), 'rawnet_')
         cp_aasist = scan_checkpoint(os.path.join(a.checkpoint_path, "aasist"), 'aasist_')
         print("cp_g: ", cp_g)
         print("cp_do: ", cp_do)
         print("cp_tssd: ", cp_tssd)
-        print("cp_rawnet: ", cp_rawnet)
+        # print("cp_rawnet: ", cp_rawnet)
         print("cp_aasist: ", cp_aasist)
 
     # load the latest checkpoint if exists
@@ -205,14 +206,14 @@ def train(rank, a, h):
         state_dict_g = load_checkpoint(cp_g, device)
         state_dict_do = load_checkpoint(cp_do, device)
         state_dict_tssd = load_checkpoint(cp_tssd, device)
-        state_dict_rawnet = load_checkpoint(cp_rawnet, device)
+        # state_dict_rawnet = load_checkpoint(cp_rawnet, device)
         state_dict_aasist = load_checkpoint(cp_aasist, device)
         generator.load_state_dict(state_dict_g['generator'])
         mpd.load_state_dict(state_dict_do['mpd'])
         mrd.load_state_dict(state_dict_do['mrd'])
         tssdnet.load_state_dict(state_dict_tssd['model_state_dict'])
-        rawnet.load_state_dict(state_dict_rawnet['model_state_dict'])
-        aasistnet.load_state_dict(state_dict_aasist['aasist'])
+        # rawnet.load_state_dict(state_dict_rawnet['model_state_dict'])
+        aasistnet.load_state_dict(state_dict_aasist['model_state_dict'])
         steps = state_dict_do['steps'] + 1
         last_epoch = state_dict_do['epoch']
 
@@ -237,11 +238,13 @@ def train(rank, a, h):
     if state_dict_do is not None:
         optim_g.load_state_dict(state_dict_do['optim_g'])
         optim_d.load_state_dict(state_dict_do['optim_d'])
-        optim_aasist.load_state_dict(state_dict_aasist['optim_aasist'])
+        optim_aasist.load_state_dict(state_dict_aasist['optimizer_state_dict'])
+        optim_tssd.load_state_dict(state_dict_tssd['optimizer_state_dict'])
 
 
     scheduler_g = torch.optim.lr_scheduler.ExponentialLR(optim_g, gamma=h.lr_decay, last_epoch=last_epoch)
     scheduler_d = torch.optim.lr_scheduler.ExponentialLR(optim_d, gamma=h.lr_decay, last_epoch=last_epoch)
+    scheduler_tssd = optim.lr_scheduler.ExponentialLR(optim_tssd, gamma=0.95)
 
 
     # define training and validation datasets
@@ -408,7 +411,7 @@ def train(rank, a, h):
     for epoch in range(max(0, last_epoch), a.training_epochs):
         probs_tssds = []
         probs_rawnets = []
-        probs_aasist = []
+        probs_aasists = []
         if rank == 0:
             start = time.time()
             print("Epoch: {}".format(epoch+1))
@@ -434,57 +437,49 @@ def train(rank, a, h):
             ######################################## 
             # 1 for fake, 0 for real
             
-            batch_size = y_g_hat.size(0)
+            batch_size = y_g_hat.detach().size(0)
             label_y_fake = torch.ones(batch_size).type(torch.int64).to(device) # 1 for fake
             label_y_real = torch.zeros(batch_size).type(torch.int64).to(device) # 0 for real
             samples_real = y.squeeze(1)
-            samples_fake = y_g_hat.squeeze(1)
+            samples_fake = y_g_hat.detach().squeeze(1)
             labels_y_mixed = torch.cat((label_y_real, label_y_fake), dim=0)
             samples_mixed = torch.cat((samples_real, samples_fake), dim=0)
             
             # compute tssd loss
-            alpha = 0.1
-            lam = np.random.beta(alpha, alpha)
-            lam = torch.tensor(lam, requires_grad=False)
-
+            optim_tssd.zero_grad()
             random_indices = torch.randperm(len(samples_mixed))
-            samples_random = lam*samples_mixed + (1-lam)*samples_mixed[random_indices, :]
 
+            labels_random = labels_y_mixed[random_indices]
+            samples_random = samples_mixed[random_indices]
             samples_random = samples_random.unsqueeze(1)
-            labels_b_mixed = labels_y_mixed[random_indices]
-            tssd_out_mixed = tssdnet(samples_random)
-            labels_random = lam * labels_y_mixed + (1 - lam) * labels_b_mixed
-            tssd_loss_mixed = F.cross_entropy(tssd_loss_mixed, labels_random)
-            # tssd_loss_mixed = lam * F.cross_entropy(tssd_out_mixed, labels_y_mixed) + (1 - lam) * F.cross_entropy(tssd_out_mixed, labels_b_mixed)
+            tssd_out = tssdnet(samples_random)
+            tssd_loss = criterion(tssd_out, labels_random)
 
             # compute tssd EER
-            t1_tssd = F.softmax(tssd_out_mixed, dim=1)
-            t2_tssd = labels_b_mixed.unsqueeze(-1)
+            t1_tssd = F.softmax(tssd_out, dim=1)
+            t2_tssd = labels_random.unsqueeze(-1)
             row = torch.cat((t1_tssd, t2_tssd), dim=1)
             probs_tssd = torch.empty(0, 3).to(device)
             probs_tssd = torch.cat((probs_tssd, row), dim=0)
             probs_tssds.extend(probs_tssd.detach().cpu().tolist())
-
+            tssd_loss.backward()
+            optim_tssd.step()
 
             ########################################
             #                Rawnet                #
             ########################################   
 
-            # 1 for fake, 0 for real
-            samples_rawnet = samples_mixed
-            random_indices = torch.randperm(len(samples_rawnet))
-            samples_rawnet = samples_rawnet[random_indices]
-            labels_y_rawnet = labels_y_mixed[random_indices]
-            rawnet_out = rawnet(samples_rawnet)
-            rawnet_loss = criterion(rawnet_out, labels_y_rawnet)
+            # # 1 for fake, 0 for real
+            # rawnet_out = rawnet(samples_random)
+            # rawnet_loss = criterion(rawnet_out, labels_random)
 
-            # compute rawnet EER
-            t1_rawnet = F.softmax(rawnet_out, dim=1)
-            t2_rawnet = labels_y_rawnet.unsqueeze(-1)
-            row = torch.cat((t1_rawnet, t2_rawnet), dim=1)
-            probs_rawnet = torch.empty(0, 3).to(device)
-            probs_rawnet = torch.cat((probs_rawnet, row), dim=0)
-            probs_rawnets.extend(probs_rawnet.detach().cpu().tolist())
+            # # compute rawnet EER
+            # t1_rawnet = F.softmax(rawnet_out, dim=1)
+            # t2_rawnet = labels_random.unsqueeze(-1)
+            # row = torch.cat((t1_rawnet, t2_rawnet), dim=1)
+            # probs_rawnet = torch.empty(0, 3).to(device)
+            # probs_rawnet = torch.cat((probs_rawnet, row), dim=0)
+            # probs_rawnets.extend(probs_rawnet.detach().cpu().tolist())
             
 
             ########################################
@@ -492,20 +487,21 @@ def train(rank, a, h):
             ########################################   
 
             # 1 for fake, 0 for real
-            samples_rawnet = samples_mixed
-            random_indices = torch.randperm(len(samples_rawnet))
-            samples_rawnet = samples_rawnet[random_indices]
-            labels_y_rawnet = labels_y_mixed[random_indices]
-            rawnet_out = rawnet(samples_rawnet)
-            rawnet_loss = criterion(rawnet_out, labels_y_rawnet)
+            optim_aasist.zero_grad()
+            aasist_out = aasistnet(samples_random.squeeze(1))
+            # aasist_out[0] representation, aasist_out[1] is result of seperation
+            aasist_out = aasist_out[1]
+            aasist_loss = criterion(aasist_out, labels_random)
 
-            # compute rawnet EER
-            t1_rawnet = F.softmax(rawnet_out, dim=1)
-            t2_rawnet = labels_y_rawnet.unsqueeze(-1)
-            row = torch.cat((t1_rawnet, t2_rawnet), dim=1)
-            probs_rawnet = torch.empty(0, 3).to(device)
-            probs_rawnet = torch.cat((probs_rawnet, row), dim=0)
-            probs_rawnets.extend(probs_rawnet.detach().cpu().tolist())
+            # compute aasist EER
+            t1_aasist = F.softmax(aasist_out, dim=1)
+            t2_aasist = labels_random.unsqueeze(-1)
+            row = torch.cat((t1_aasist, t2_aasist), dim=1)
+            probs_aasist = torch.empty(0, 3).to(device)
+            probs_aasist = torch.cat((probs_aasist, row), dim=0)
+            probs_aasists.extend(probs_aasist.detach().cpu().tolist())
+            aasist_loss.backward()
+            optim_aasist.step()
 
 
             ########################################
@@ -552,32 +548,17 @@ def train(rank, a, h):
             loss_gen_s, losses_gen_s = generator_loss(y_ds_hat_g)
 
             if steps >= a.freeze_step:
-                loss_gen_all = loss_gen_s + loss_gen_f + loss_fm_s + loss_fm_f + loss_mel - 0.02*rawnet_loss - 0.02*tssd_loss_mixed
+                loss_gen_all = loss_gen_s + loss_gen_f + loss_fm_s + loss_fm_f + loss_mel
             else:
                 print("WARNING: using regression loss only for G for the first {} steps".format(a.freeze_step))
-                loss_gen_all = loss_mel - 0.02*rawnet_loss - 0.02*tssd_loss_mixed
+                loss_gen_all = loss_mel
 
             loss_gen_all.backward()
             grad_norm_g = torch.nn.utils.clip_grad_norm_(generator.parameters(), 1000.)
-            
+        
             optim_g.step()
 
             if rank == 0:
-                # if steps % 100 == 0: # just for test
-                #     break
-                #     eer_rawnet = cal_roc_eer(torch.tensor(probs_rawnets))
-                #     eer_tssd = cal_roc_eer(torch.tensor(probs_tssds))
-                #     eer_rawnet1 = compute_eer(np.array(probs_rawnets)[:, 2], np.array(probs_rawnets)[:, 0], 1)
-                #     eer_tssd1 = compute_eer(np.array(probs_tssds)[:, 2], np.array(probs_tssds)[:, 0], 1)
-                #     eer_rawnet0 = compute_eer(np.array(probs_rawnets)[:, 2], np.array(probs_rawnets)[:, 0], 0)
-                #     eer_tssd0 = compute_eer(np.array(probs_tssds)[:, 2], np.array(probs_tssds)[:, 0], 0)
-                #     log_str = 'Epoch: {:d}, Steps : {:d}, TSSD_EER : {:4.5f}, TSSD_EER1 : {:4.5f}, TSSD_EER0 : {:4.5f}, Rawnet_EER : {:4.5f}, Rawnet_EER1 : {:4.5f}, Rawnet_EER0 : {:4.5f}'.format(
-                #                     epoch, steps, eer_tssd, eer_tssd1, eer_tssd0, eer_rawnet, eer_rawnet1, eer_rawnet0)
-                #     log_dir = os.path.join(a.checkpoint_path, 'loss_log')
-                #     os.makedirs(log_dir, exist_ok=True)
-                #     txt_file = os.path.join(log_dir, 'eer_log.txt')
-                #     with open(txt_file, 'a') as f:
-                #         f.write(log_str + '\n')
 
                 # STDOUT logging
                 if steps % a.stdout_interval == 0:
@@ -586,7 +567,7 @@ def train(rank, a, h):
 
                     log_str = 'Steps : {:d}, Gen Loss Total : {:4.3f}, Mel-Spec. Error : {:4.3f}, s/b : {:4.3f}'.format(
                         steps, loss_gen_all, mel_error, time.time() - start_b)
-                    log_loss = ', TSSD_loss : {:4.3f}, RawNet_loss : {:4.3f}'.format(tssd_loss_mixed, rawnet_loss)
+                    log_loss = ', TSSD_loss : {:4.3f}, Aasist_loss : {:4.3f}'.format(tssd_loss, aasist_loss)
                     log_str = log_str + log_loss
                     print(log_str)
 
@@ -612,12 +593,19 @@ def train(rank, a, h):
                                                     'steps': steps,
                                                     'epoch': epoch})
 
-                    # checkpoint_path = "{}/tssd_{:08d}".format(os.path.join(a.checkpoint_path, "tssd"), steps)
-                    # os.makedirs(os.path.join(a.checkpoint_path, "tssd"), exist_ok=True)
-                    # save_checkpoint(checkpoint_path, {'epoch': epoch,
-                    #                                 'model_state_dict': tssdnet.state_dict(),
-                    #                                 'optimizer_state_dict': optim_tssd.state_dict(),
-                    #                                 'scheduler_state_dict': scheduler_tssd.state_dict()})
+                    checkpoint_path = "{}/tssd_{:08d}".format(os.path.join(a.checkpoint_path, "tssd"), steps)
+                    os.makedirs(os.path.join(a.checkpoint_path, "tssd"), exist_ok=True)
+                    save_checkpoint(checkpoint_path, {'epoch': epoch,
+                                                    'model_state_dict': tssdnet.state_dict(),
+                                                    'optimizer_state_dict': optim_tssd.state_dict(),
+                                                    'scheduler_state_dict': scheduler_tssd.state_dict()})
+                    
+                    checkpoint_path = "{}/aasist_{:08d}".format(os.path.join(a.checkpoint_path, "aasist"), steps)
+                    os.makedirs(os.path.join(a.checkpoint_path, "aasist"), exist_ok=True)
+                    save_checkpoint(checkpoint_path, {'epoch': epoch,
+                                                    'model_state_dict': aasistnet.state_dict(),
+                                                    'optimizer_state_dict': optim_aasist.state_dict(),
+                                                    'scheduler_state_dict': scheduler_aasist.state_dict()})
                     
                     # checkpoint_path = "{}/rawnet_{:08d}".format(os.path.join(a.checkpoint_path, "rawnet"), steps)
                     # os.makedirs(os.path.join(a.checkpoint_path, "rawnet"), exist_ok=True)
@@ -659,31 +647,39 @@ def train(rank, a, h):
 
         scheduler_g.step()
         scheduler_d.step()
+        scheduler_tssd.step()
+        scheduler_aasist.step()
         
         # calculate the whole epoch EER
-        eer_rawnet = cal_roc_eer(torch.tensor(probs_rawnets))
+        # eer_rawnet = cal_roc_eer(torch.tensor(probs_rawnets))
+        # eer_rawnet0 = compute_eer(np.array(probs_rawnets)[:, 2], np.array(probs_rawnets)[:, 0], 0)
+        # accuracy_rawnet = cal_accuracy(probs_rawnets)
+        # auc_rawnet = roc_auc_score(np.array(probs_rawnets)[:, 2], np.array(probs_rawnets)[:, 0])
+        # bal_acc_rawnet = balanced_accuracy_score(np.array(probs_rawnets)[:, 2], np.argmax(np.array(probs_rawnets)[:, :2], axis=1))
+        eer_aasist = cal_roc_eer(torch.tensor(probs_aasists))
+        eer_aasist0 = compute_eer(np.array(probs_aasists)[:, 2], np.array(probs_aasists)[:, 0], 0)
+        accuracy_aasist = cal_accuracy(probs_aasists)
+        auc_aasist = roc_auc_score(np.array(probs_aasists)[:, 2], np.array(probs_aasists)[:, 0])
+        bal_acc_aasist = balanced_accuracy_score(np.array(probs_aasists)[:, 2], np.argmax(np.array(probs_aasists)[:, :2], axis=1))
         eer_tssd = cal_roc_eer(torch.tensor(probs_tssds))
-        eer_rawnet0 = compute_eer(np.array(probs_rawnets)[:, 2], np.array(probs_rawnets)[:, 0], 0)
         eer_tssd0 = compute_eer(np.array(probs_tssds)[:, 2], np.array(probs_tssds)[:, 0], 0)
         accuracy_tssd = cal_accuracy(probs_tssds)
-        accuracy_rawnet = cal_accuracy(probs_rawnets)
-        auc_rawnet = roc_auc_score(np.array(probs_rawnets)[:, 2], np.array(probs_rawnets)[:, 0])
         auc_tssd = roc_auc_score(np.array(probs_tssds)[:, 2], np.array(probs_tssds)[:, 0])
-        bal_acc_rawnet = balanced_accuracy_score(np.array(probs_rawnets)[:, 2], np.argmax(np.array(probs_rawnets)[:, :2], axis=1))
         bal_acc_tssd = balanced_accuracy_score(np.array(probs_tssds)[:, 2], np.argmax(np.array(probs_tssds)[:, :2], axis=1))
 
         epoch_str = 'Epoch: {:d}, Steps : {:d}, '.format(
                         epoch, steps)
         tssd_str = '    TSSD_EER : {:4.5f}, TSSD_Accuracy : {:4.5f}, TSSD_AUC : {:4.5f}, TSSD_Bal_acc : {:4.5f}, '.format(
                         eer_tssd, accuracy_tssd, 1-auc_tssd, bal_acc_tssd)
-        raw_str = '    Rawnet_EER : {:4.5f}, Rawnet_Accuracy : {:4.5f}, Rawnet_AUC : {:4.5f}, Rawnet_Bal_acc : {:4.5f}, '.format(
-                        eer_rawnet, accuracy_rawnet, 1-auc_rawnet, bal_acc_rawnet)
-        add_str = '    TSSD_EER0 : {:4.5f}, Rawnet_EER0 : {:4.5f}'.format(eer_tssd0, eer_rawnet0)
+        # raw_str = '    Rawnet_EER : {:4.5f}, Rawnet_Accuracy : {:4.5f}, Rawnet_AUC : {:4.5f}, Rawnet_Bal_acc : {:4.5f}, '.format(
+        #                 eer_rawnet, accuracy_rawnet, 1-auc_rawnet, bal_acc_rawnet)
+        # add_str = '    TSSD_EER0 : {:4.5f}, Rawnet_EER0 : {:4.5f}'.format(eer_tssd0, eer_rawnet0)
+        aasist_str = '    Aasist_EER : {:4.5f}, Aasist_Accuracy : {:4.5f}, Aasist_AUC : {:4.5f}, Aasist_Bal_acc : {:4.5f}, '.format(
+                        eer_aasist, accuracy_aasist, 1-auc_aasist, bal_acc_aasist)
+        add_str = '    TSSD_EER0 : {:4.5f}, Aasist_EER0 : {:4.5f}'.format(eer_tssd0, eer_aasist0)
         
-        log_str = epoch_str+'\n'+tssd_str+'\n'+raw_str+'\n'+add_str
+        log_str = epoch_str+'\n'+tssd_str+'\n'+aasist_str+'\n'+add_str
 
-        # log_str = 'Epoch: {:d}, Steps : {:d}, TSSD_EER : {:4.5f}, TSSD_Accuracy : {:4.5f}, TSSD_AUC : {:4.5f}, TSSD_Bal_acc : {:4.5f}, Rawnet_EER : {:4.5f}, Rawnet_Accuracy : {:4.5f}, Rawnet_AUC : {:4.5f}, Rawnet_Bal_acc : {:4.5f}, TSSD_EER1 : {:4.5f}, TSSD_EER0 : {:4.5f}, Rawnet_EER1 : {:4.5f}, Rawnet_EER0 : {:4.5f}'.format(
-                        # epoch, steps, eer_tssd, accuracy_tssd, auc_tssd, bal_acc_tssd, eer_rawnet, accuracy_rawnet, auc_rawnet, bal_acc_rawnet, eer_tssd1, eer_tssd0, eer_rawnet1, eer_rawnet0)
         log_dir = os.path.join(a.checkpoint_path, 'loss_log')
         os.makedirs(log_dir, exist_ok=True)
         txt_file = os.path.join(log_dir, 'eer_log.txt')

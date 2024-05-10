@@ -24,7 +24,7 @@
                 "--list_input_unseen_validation_file",
                 "/workspace/BigVGAN/BigVGAN/LibriTTS_pair/unseen.txt",
                 "--checkpoint_path",
-                "/workspace/BigVGAN/BigVGAN/bigvgan_22khz_80band/detect_experiment3",
+                "/workspace/BigVGAN/BigVGAN/bigvgan_22khz_80band/train_tssd_aasist",
                 "--fine_tuning",
                 "True",
             ],
