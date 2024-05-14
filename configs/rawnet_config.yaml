@@ -1,10 +1,3 @@
----
-
-#df_train_path: 'data/df_train.csv'
-#df_dev_path: 'data/df_dev.csv'
-#df_eval_path: 'data/df_original_eval_19.csv'
-##df_eval_path: 'data/df_eval.csv'
-#df_aug_path: 'data/df_aug.csv'
 fs: 22050
 batch_size: 8
 num_epochs: 150
@@ -13,14 +6,10 @@ lr: 0.0001
 weight_decay: 0.0001
 loss: weighted_CCE
 seed: 1234
-#models_folder: 'checkpoints/rawnet_model/'
-#model_path: ''
-#save_trained_name: 'ASVSpoof2019.pth'
 training: True
 optimizer: 'Adam'
 amsgrad: 1
 win_len: 5
-#hop_size: 0.1
 
 #model-related
 model:

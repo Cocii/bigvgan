@@ -15,10 +15,15 @@
 python train.py \
 --input_wavs_dir /workspace/BigVGAN/BigVGAN/LibriTTS_pair/real_audios \
 --input_mels_dir /workspace/BigVGAN/BigVGAN/LibriTTS_pair/mels \
---input_training_file /data/dataset/vocoder/LibriTTS_pair/real_audio_list.txt \
---input_validation_file /workspace/BigVGAN/BigVGAN/LibriTTS_pair/validation.txt \
+--input_training_file /data/dataset/vocoder/LibriTTS_pair/bigvgan_train_validate/train.txt \
+--input_validation_file /data/dataset/vocoder/LibriTTS_pair/bigvgan_train_validate/validation.txt \
 --list_input_unseen_wavs_dir /workspace/BigVGAN/BigVGAN/LibriTTS_pair/real_audios \
 --list_input_unseen_validation_file /workspace/BigVGAN/BigVGAN/LibriTTS_pair/unseen.txt \
 --config /workspace/BigVGAN/BigVGAN/bigvgan_22khz_80band/config.json \
---checkpoint_path /workspace/BigVGAN/BigVGAN/bigvgan_22khz_80band/train_tssd_aasist_rawnet \
---fine_tuning True
+--checkpoint_path /workspace/BigVGAN/BigVGAN/bigvgan_22khz_80band/train_tssd_aasist_rawnet_newmetric \
+--fine_tuning True \
+--validation_interval 50000 \
+--checkpoint_interval 50000 \
+# --eval_subsample 50 \
+# --checkpoint_interval 50 \
+# --summary_interval 50
