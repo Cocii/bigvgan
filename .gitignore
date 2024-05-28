@@ -2,3 +2,4 @@ __pycache__/
 bigvgan_22khz_80band
 LibriTTS_fake
 test_files/
+audios2mels/

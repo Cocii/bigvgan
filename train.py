@@ -139,6 +139,7 @@ def train(rank, a, h):
                            world_size=h.dist_config['world_size'] * h.num_gpus, rank=rank)
 
     # set seed and device
+    MSELoss = nn.MSELoss()
     torch.cuda.manual_seed(h.seed)
     torch.cuda.set_device(rank)
     device = torch.device('cuda:{:d}'.format(rank))
@@ -157,7 +158,7 @@ def train(rank, a, h):
     tssdnet = tssdnet.to(device)
     num_total_learnable_params = sum(i.numel() for i in tssdnet.parameters() if i.requires_grad)
     print('Number of learnable params: {}.'.format(num_total_learnable_params))
-    optim_tssd = optim.Adam(tssdnet.parameters(), lr=0.001, weight_decay = 0.0001)
+    
 
     ## define aasistnet
     aasist_config_path = os.path.join(current_script_directory, "configs", 'aasis_config.conf')
@@ -235,28 +236,29 @@ def train(rank, a, h):
     optim_g = torch.optim.AdamW(generator.parameters(), h.learning_rate, betas=[h.adam_b1, h.adam_b2])
     optim_d = torch.optim.AdamW(itertools.chain(mrd.parameters(), mpd.parameters()),
                                 h.learning_rate, betas=[h.adam_b1, h.adam_b2])
-    optim_rawnet = torch.optim.Adam(rawnet.parameters(), lr=config_rawnet['lr'], weight_decay = 0.0001)
-    optim_aasist = torch.optim.Adam(aasistnet.parameters(),
-                                     lr=aasist_optim_config['base_lr'],
-                                     betas=aasist_optim_config['betas'],
-                                     weight_decay=aasist_optim_config['weight_decay'],
-                                     amsgrad=str_to_bool(
-                                         aasist_optim_config['amsgrad']))
+    # optim_tssd = optim.Adam(tssdnet.parameters(), lr=0.001, weight_decay = 0.0001)
+    # optim_rawnet = torch.optim.Adam(rawnet.parameters(), lr=config_rawnet['lr'], weight_decay = 0.0001)
+    # optim_aasist = torch.optim.Adam(aasistnet.parameters(),
+    #                                  lr=0.1*aasist_optim_config['base_lr'],
+    #                                  betas=aasist_optim_config['betas'],
+    #                                  weight_decay=aasist_optim_config['weight_decay'],
+    #                                  amsgrad=str_to_bool(
+    #                                      aasist_optim_config['amsgrad']))
     
     ## optimizers definition
     if state_dict_do is not None:
         optim_g.load_state_dict(state_dict_do['optim_g'])
         optim_d.load_state_dict(state_dict_do['optim_d'])
-    if state_dict_rawnet is not None and state_dict_tssd is not None and state_dict_aasist is not None:
-        optim_rawnet.load_state_dict(state_dict_rawnet['optim_rawnet'])
-        optim_aasist.load_state_dict(state_dict_aasist['optimizer_state_dict'])
-        optim_tssd.load_state_dict(state_dict_tssd['optimizer_state_dict'])
+    # if state_dict_rawnet is not None and state_dict_tssd is not None and state_dict_aasist is not None:
+    #     optim_rawnet.load_state_dict(state_dict_rawnet['optim_rawnet'])
+    #     optim_aasist.load_state_dict(state_dict_aasist['optimizer_state_dict'])
+    #     optim_tssd.load_state_dict(state_dict_tssd['optimizer_state_dict'])
 
 
     scheduler_g = torch.optim.lr_scheduler.ExponentialLR(optim_g, gamma=h.lr_decay, last_epoch=last_epoch)
     scheduler_d = torch.optim.lr_scheduler.ExponentialLR(optim_d, gamma=h.lr_decay, last_epoch=last_epoch)
-    scheduler_tssd = optim.lr_scheduler.ExponentialLR(optim_tssd, gamma=0.95)
-    scheduler_rawnet = optim.lr_scheduler.ExponentialLR(optim_rawnet, gamma=0.95)
+    # scheduler_tssd = optim.lr_scheduler.ExponentialLR(optim_tssd, gamma=0.95)
+    # scheduler_rawnet = optim.lr_scheduler.ExponentialLR(optim_rawnet, gamma=0.95)
 
 
     # define training and validation datasets
@@ -269,13 +271,13 @@ def train(rank, a, h):
     aasist_optim_config["steps_per_epoch"] = len(training_filelist)
     total_steps = aasist_optim_config['epochs'] * \
             aasist_optim_config['steps_per_epoch']
-    scheduler_aasist = torch.optim.lr_scheduler.LambdaLR(
-            optim_aasist,
-            lr_lambda=lambda step: cosine_annealing(
-                step,
-                total_steps,
-                1,  # since lr_lambda computes multiplicative factor
-                aasist_optim_config['lr_min'] / aasist_optim_config['base_lr']))
+    # scheduler_aasist = torch.optim.lr_scheduler.LambdaLR(
+    #         optim_aasist,
+    #         lr_lambda=lambda step: cosine_annealing(
+    #             step,
+    #             total_steps,
+    #             1,  # since lr_lambda computes multiplicative factor
+    #             aasist_optim_config['lr_min'] / aasist_optim_config['base_lr']))
     
     trainset = MelDataset(training_filelist, h, h.segment_size, h.n_fft, h.num_mels,
                           h.hop_size, h.win_size, h.sampling_rate, h.fmin, h.fmax, n_cache_reuse=0,
@@ -467,13 +469,13 @@ def train(rank, a, h):
             # log part
             epoch_str = 'Steps : {:d}, '.format(
                             steps)
-            tssd_str = '    TSSD_EER : {:4.5f}, TSSD_AUC : {:4.5f}, TSSD_Bal_acc : {:4.5f}, '.format(
-                            eer_tssd, 1-auc_tssd, bal_acc_tssd)
-            raw_str = '    Rawnet_EER : {:4.5f}, Rawnet_AUC : {:4.5f}, Rawnet_Bal_acc : {:4.5f}, '.format(
-                            eer_rawnet, 1-auc_rawnet, bal_acc_rawnet)
+            tssd_str = '    TSSD_EER : {:4.5f}, TSSD_Bal_acc : {:4.5f}, TSSD_AUC : {:4.5f}, '.format(
+                            eer_tssd, bal_acc_tssd, 1-auc_tssd)
+            raw_str = '    Rawnet_EER : {:4.5f}, Rawnet_Bal_acc : {:4.5f}, Rawnet_AUC : {:4.5f}, '.format(
+                            eer_rawnet, bal_acc_rawnet, 1-auc_rawnet)
             # add_str = '    TSSD_EER0 : {:4.5f}, Rawnet_EER0 : {:4.5f}'.format(eer_tssd0, eer_rawnet0)
-            aasist_str = '    Aasist_EER : {:4.5f}, Aasist_AUC : {:4.5f}, Aasist_Bal_acc : {:4.5f}, '.format(
-                            eer_aasist, 1-auc_aasist, bal_acc_aasist)
+            aasist_str = '    Aasist_EER : {:4.5f}, Aasist_Bal_acc : {:4.5f}, Aasist_AUC : {:4.5f}, '.format(
+                            eer_aasist, bal_acc_aasist, 1-auc_aasist)
             add_str = '    TSSD_EER0 : {:4.5f}, Aasist_EER0 : {:4.5f}, Rawnet_EER0 : {:4.5f}'.format(eer_tssd0, eer_aasist0, eer_rawnet0)
             
             log_str = epoch_str+'\n'+tssd_str+'\n'+aasist_str+'\n'+raw_str+'\n'+add_str
@@ -540,8 +542,8 @@ def train(rank, a, h):
             y_mel = y_mel.to(device, non_blocking=True)
             y = y.unsqueeze(1)
             y_g_hat = generator(x)
-            # y_g_hat_mel = mel_spectrogram(y_g_hat.squeeze(1), h.n_fft, h.num_mels, h.sampling_rate, h.hop_size, h.win_size,
-            #                               h.fmin, h.fmax_for_loss)
+            y_g_hat_mel = mel_spectrogram(y_g_hat.squeeze(1), h.n_fft, h.num_mels, h.sampling_rate, h.hop_size, h.win_size,
+                                          h.fmin, h.fmax_for_loss)
 
             ########################################
             #                 TSSD                 #
@@ -557,26 +559,32 @@ def train(rank, a, h):
             samples_mixed = torch.cat((samples_real, samples_fake), dim=0)
             
             # compute tssd loss
-            optim_tssd.zero_grad()
+            # optim_tssd.zero_grad()
             random_indices = torch.randperm(len(samples_mixed))
             labels_random = labels_y_mixed[random_indices]
             samples_random = samples_mixed[random_indices]
             samples_tssd = samples_random.unsqueeze(1)
+            samples_fake = samples_fake.unsqueeze(1)
             tssd_out = tssdnet(samples_tssd)
             tssd_loss = criterion(tssd_out, labels_random)
-            tssd_loss.backward()
-            optim_tssd.step()
+            tssd_predicted = tssdnet(samples_fake)
+            # tssd_adv_loss = MSELoss(tssd_predicted, tssd_predicted.detach().new_zeros(tssd_predicted.size())) 
+            tssd_adv_loss = criterion(tssd_predicted, tssd_predicted.detach().new_zeros(tssd_predicted.size())) 
+            # tssd_loss.backward()
+            # optim_tssd.step()
 
             ########################################
             #                Rawnet                #
             ########################################   
 
             # # 1 for fake, 0 for real
-            optim_rawnet.zero_grad()
+            # optim_rawnet.zero_grad()
             rawnet_out = rawnet(samples_random)
             rawnet_loss = criterion(rawnet_out, labels_random)
-            rawnet_loss.backward()
-            optim_rawnet.step()
+            rawnet_predicted = rawnet(samples_fake)
+            rawnet_adv_loss = criterion(rawnet_predicted, rawnet_predicted.detach().new_zeros(rawnet_predicted.size()))
+            # rawnet_loss.backward()
+            # optim_rawnet.step()
             
 
             ########################################
@@ -584,82 +592,83 @@ def train(rank, a, h):
             ########################################   
 
             # 1 for fake, 0 for real
-            optim_aasist.zero_grad()
+            # optim_aasist.zero_grad()
             aasist_out = aasistnet(samples_random.squeeze(1))
             # aasist_out[0] representation, aasist_out[1] is result of seperation
+
             aasist_out = aasist_out[1]
             aasist_loss = criterion(aasist_out, labels_random)
-            aasist_loss.backward()
-            optim_aasist.step()
+            # aasist_loss.backward()
+            # optim_aasist.step()
 
 
             ########################################
             #                BigvGAN               #
             ######################################## 
-            # # discriminator 
-            # optim_d.zero_grad()
+            # discriminator 
+            optim_d.zero_grad()
 
-            # # MPD
-            # y_df_hat_r, y_df_hat_g, _, _ = mpd(y, y_g_hat.detach())
-            # loss_disc_f, losses_disc_f_r, losses_disc_f_g = discriminator_loss(y_df_hat_r, y_df_hat_g)
+            # MPD
+            y_df_hat_r, y_df_hat_g, _, _ = mpd(y, y_g_hat.detach())
+            loss_disc_f, losses_disc_f_r, losses_disc_f_g = discriminator_loss(y_df_hat_r, y_df_hat_g)
 
-            # # MRD
-            # y_ds_hat_r, y_ds_hat_g, _, _ = mrd(y, y_g_hat.detach())
-            # loss_disc_s, losses_disc_s_r, losses_disc_s_g = discriminator_loss(y_ds_hat_r, y_ds_hat_g)
+            # MRD
+            y_ds_hat_r, y_ds_hat_g, _, _ = mrd(y, y_g_hat.detach())
+            loss_disc_s, losses_disc_s_r, losses_disc_s_g = discriminator_loss(y_ds_hat_r, y_ds_hat_g)
 
-            # loss_disc_all = loss_disc_s + loss_disc_f
+            loss_disc_all = loss_disc_s + loss_disc_f
 
-            # # whether to freeze D for initial training steps
-            # if steps >= a.freeze_step:
-            #     loss_disc_all.backward()
-            #     grad_norm_mpd = torch.nn.utils.clip_grad_norm_(mpd.parameters(), 1000.)
-            #     grad_norm_mrd = torch.nn.utils.clip_grad_norm_(mrd.parameters(), 1000.)
-            #     optim_d.step()
-            # else:
-            #     print("WARNING: skipping D training for the first {} steps".format(a.freeze_step))
-            #     grad_norm_mpd = 0.
-            #     grad_norm_mrd = 0.
+            # whether to freeze D for initial training steps
+            if steps >= a.freeze_step:
+                loss_disc_all.backward()
+                grad_norm_mpd = torch.nn.utils.clip_grad_norm_(mpd.parameters(), 1000.)
+                grad_norm_mrd = torch.nn.utils.clip_grad_norm_(mrd.parameters(), 1000.)
+                optim_d.step()
+            else:
+                print("WARNING: skipping D training for the first {} steps".format(a.freeze_step))
+                grad_norm_mpd = 0.
+                grad_norm_mrd = 0.
 
-            # # generator
-            # optim_g.zero_grad()
+            # generator
+            optim_g.zero_grad()
 
-            # # L1 Mel-Spectrogram Loss
-            # loss_mel = F.l1_loss(y_mel, y_g_hat_mel) * 45
+            # L1 Mel-Spectrogram Loss
+            loss_mel = F.l1_loss(y_mel, y_g_hat_mel) * 45
 
-            # # MPD loss
-            # y_df_hat_r, y_df_hat_g, fmap_f_r, fmap_f_g = mpd(y, y_g_hat)
-            # loss_fm_f = feature_loss(fmap_f_r, fmap_f_g)
-            # loss_gen_f, losses_gen_f = generator_loss(y_df_hat_g)
+            # MPD loss
+            y_df_hat_r, y_df_hat_g, fmap_f_r, fmap_f_g = mpd(y, y_g_hat)
+            loss_fm_f = feature_loss(fmap_f_r, fmap_f_g)
+            loss_gen_f, losses_gen_f = generator_loss(y_df_hat_g)
 
-            # # MRD loss
-            # y_ds_hat_r, y_ds_hat_g, fmap_s_r, fmap_s_g = mrd(y, y_g_hat)
-            # loss_fm_s = feature_loss(fmap_s_r, fmap_s_g)
-            # loss_gen_s, losses_gen_s = generator_loss(y_ds_hat_g)
+            # MRD loss
+            y_ds_hat_r, y_ds_hat_g, fmap_s_r, fmap_s_g = mrd(y, y_g_hat)
+            loss_fm_s = feature_loss(fmap_s_r, fmap_s_g)
+            loss_gen_s, losses_gen_s = generator_loss(y_ds_hat_g)
 
-            # if steps >= a.freeze_step:
-            #     loss_gen_all = loss_gen_s + loss_gen_f + loss_fm_s + loss_fm_f + loss_mel
-            # else:
-            #     print("WARNING: using regression loss only for G for the first {} steps".format(a.freeze_step))
-            #     loss_gen_all = loss_mel
+            if steps >= a.freeze_step:
+                loss_gen_all = loss_gen_s + loss_gen_f + loss_fm_s + loss_fm_f + loss_mel + 0.05*rawnet_adv_loss + 0.05*tssd_adv_loss
+            else:
+                print("WARNING: using regression loss only for G for the first {} steps".format(a.freeze_step))
+                loss_gen_all = loss_mel  + 0.05*rawnet_adv_loss + 0.05*tssd_adv_loss
 
-            # loss_gen_all.backward()
-            # grad_norm_g = torch.nn.utils.clip_grad_norm_(generator.parameters(), 1000.)
+            loss_gen_all.backward()
+            grad_norm_g = torch.nn.utils.clip_grad_norm_(generator.parameters(), 1000.)
         
-            # optim_g.step()
+            optim_g.step()
 
             if rank == 0:
 
                 # STDOUT logging
                 if steps % a.stdout_interval == 0:
-                    # with torch.no_grad():
-                        # mel_error = F.l1_loss(y_mel, y_g_hat_mel).item()
+                    with torch.no_grad():
+                        mel_error = F.l1_loss(y_mel, y_g_hat_mel).item()
 
                     log_str = 'Steps : {:d}'.format(steps)
-                    # log_gen_loss = ', Gen Loss Total : {:4.3f}, Mel-Spec. Error : {:4.3f}, s/b : {:4.3f}'.format(
-                        # loss_gen_all, mel_error, time.time() - start_b)
+                    log_gen_loss = ', Gen Loss Total : {:4.3f}, Mel-Spec. Error : {:4.3f}, s/b : {:4.3f}'.format(
+                        loss_gen_all, mel_error, time.time() - start_b)
                     log_tssd_loss = ', TSSD_loss : {:4.3f}, Aasist_loss : {:4.3f}'.format(tssd_loss, aasist_loss)
                     log_rawnet_loss = ', Rawnet_loss : {:4.3f}'.format(rawnet_loss)
-                    log_str = log_str + log_tssd_loss + log_rawnet_loss
+                    log_str = log_str + log_gen_loss + log_tssd_loss + log_rawnet_loss
                     print(log_str)
 
                     # Write to txt file
@@ -684,39 +693,39 @@ def train(rank, a, h):
                                                     'steps': steps,
                                                     'epoch': epoch})
 
-                    checkpoint_path = "{}/tssd_{:08d}".format(os.path.join(a.checkpoint_path, "tssd"), steps)
-                    os.makedirs(os.path.join(a.checkpoint_path, "tssd"), exist_ok=True)
-                    save_checkpoint(checkpoint_path, {'epoch': epoch,
-                                                    'model_state_dict': tssdnet.state_dict(),
-                                                    'optimizer_state_dict': optim_tssd.state_dict(),
-                                                    'scheduler_state_dict': scheduler_tssd.state_dict()})
+                    # checkpoint_path = "{}/tssd_{:08d}".format(os.path.join(a.checkpoint_path, "tssd"), steps)
+                    # os.makedirs(os.path.join(a.checkpoint_path, "tssd"), exist_ok=True)
+                    # save_checkpoint(checkpoint_path, {'epoch': epoch,
+                    #                                 'model_state_dict': tssdnet.state_dict(),
+                    #                                 'optimizer_state_dict': optim_tssd.state_dict(),
+                    #                                 'scheduler_state_dict': scheduler_tssd.state_dict()})
                     
-                    checkpoint_path = "{}/aasist_{:08d}".format(os.path.join(a.checkpoint_path, "aasist"), steps)
-                    os.makedirs(os.path.join(a.checkpoint_path, "aasist"), exist_ok=True)
-                    save_checkpoint(checkpoint_path, {'epoch': epoch,
-                                                    'model_state_dict': aasistnet.state_dict(),
-                                                    'optimizer_state_dict': optim_aasist.state_dict(),
-                                                    'scheduler_state_dict': scheduler_aasist.state_dict()})
+                    # checkpoint_path = "{}/aasist_{:08d}".format(os.path.join(a.checkpoint_path, "aasist"), steps)
+                    # os.makedirs(os.path.join(a.checkpoint_path, "aasist"), exist_ok=True)
+                    # save_checkpoint(checkpoint_path, {'epoch': epoch,
+                    #                                 'model_state_dict': aasistnet.state_dict(),
+                    #                                 'optimizer_state_dict': optim_aasist.state_dict(),
+                    #                                 'scheduler_state_dict': scheduler_aasist.state_dict()})
                     
-                    checkpoint_path = "{}/rawnet_{:08d}".format(os.path.join(a.checkpoint_path, "rawnet"), steps)
-                    os.makedirs(os.path.join(a.checkpoint_path, "rawnet"), exist_ok=True)
-                    save_checkpoint(checkpoint_path, {'model_state_dict': rawnet.state_dict(),
-                                                    'optim_rawnet': optim_rawnet.state_dict(),
-                                                    'scheduler_state_dict': scheduler_rawnet.state_dict()})
+                    # checkpoint_path = "{}/rawnet_{:08d}".format(os.path.join(a.checkpoint_path, "rawnet"), steps)
+                    # os.makedirs(os.path.join(a.checkpoint_path, "rawnet"), exist_ok=True)
+                    # save_checkpoint(checkpoint_path, {'model_state_dict': rawnet.state_dict(),
+                    #                                 'optim_rawnet': optim_rawnet.state_dict(),
+                    #                                 'scheduler_state_dict': scheduler_rawnet.state_dict()})
                     
                 # Tensorboard summary logging
                 if steps % a.summary_interval == 0:
-                    # sw.add_scalar("training/gen_loss_total", loss_gen_all, steps)
-                    # sw.add_scalar("training/mel_spec_error", mel_error, steps)
-                    # sw.add_scalar("training/fm_loss_mpd", loss_fm_f.item(), steps)
-                    # sw.add_scalar("training/gen_loss_mpd", loss_gen_f.item(), steps)
-                    # sw.add_scalar("training/disc_loss_mpd", loss_disc_f.item(), steps)
-                    # sw.add_scalar("training/grad_norm_mpd", grad_norm_mpd, steps)
-                    # sw.add_scalar("training/fm_loss_mrd", loss_fm_s.item(), steps)
-                    # sw.add_scalar("training/gen_loss_mrd", loss_gen_s.item(), steps)
-                    # sw.add_scalar("training/disc_loss_mrd", loss_disc_s.item(), steps)
-                    # sw.add_scalar("training/grad_norm_mrd", grad_norm_mrd, steps)
-                    # sw.add_scalar("training/grad_norm_g", grad_norm_g, steps)
+                    sw.add_scalar("training/gen_loss_total", loss_gen_all, steps)
+                    sw.add_scalar("training/mel_spec_error", mel_error, steps)
+                    sw.add_scalar("training/fm_loss_mpd", loss_fm_f.item(), steps)
+                    sw.add_scalar("training/gen_loss_mpd", loss_gen_f.item(), steps)
+                    sw.add_scalar("training/disc_loss_mpd", loss_disc_f.item(), steps)
+                    sw.add_scalar("training/grad_norm_mpd", grad_norm_mpd, steps)
+                    sw.add_scalar("training/fm_loss_mrd", loss_fm_s.item(), steps)
+                    sw.add_scalar("training/gen_loss_mrd", loss_gen_s.item(), steps)
+                    sw.add_scalar("training/disc_loss_mrd", loss_disc_s.item(), steps)
+                    sw.add_scalar("training/grad_norm_mrd", grad_norm_mrd, steps)
+                    sw.add_scalar("training/grad_norm_g", grad_norm_g, steps)
                     sw.add_scalar("training/learning_rate_d", scheduler_d.get_last_lr()[0], steps)
                     sw.add_scalar("training/learning_rate_g", scheduler_g.get_last_lr()[0], steps)
                     sw.add_scalar("training/epoch", epoch+1, steps)
@@ -739,9 +748,9 @@ def train(rank, a, h):
 
         scheduler_g.step()
         scheduler_d.step()
-        scheduler_tssd.step()
-        scheduler_aasist.step()
-        scheduler_rawnet.step()
+        # scheduler_tssd.step()
+        # scheduler_aasist.step()
+        # scheduler_rawnet.step()
         
         if rank == 0:
             print('Time taken for epoch {} is {} sec\n'.format(epoch + 1, int(time.time() - start)))

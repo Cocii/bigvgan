@@ -20,7 +20,7 @@ fig, axs = plt.subplots(3, 1, figsize=(5, 6))
 
 for i, filename in enumerate(audio_files[:3]):
     audio_path = os.path.join(audio_folder, filename)
-    y, sr = librosa.load(audio_path)
+    y, sr = librosa.load(audio_path, 22050)
     
     mel_spec = librosa.feature.melspectrogram(y=y, sr=sr)
     mel_spec_db = librosa.power_to_db(mel_spec, ref=np.max)
@@ -42,12 +42,14 @@ for i, filename in enumerate(audio_files[:3]):
     librosa.display.specshow(mel_spec_db, x_axis='time', y_axis='mel', sr=sr, fmax=8000, ax=axs[i], cmap='viridis')
 
     # define color bar
-    # cbar = fig.colorbar(axs[i].collections[0], ax=axs[i], format="%+2.0f dB")
-    # cbar.ax.tick_params(labelsize=font_size_change)
-    # for tick in cbar.ax.get_yticklabels():
-    #     tick.set_fontproperties(font_prop)
+    cbar = fig.colorbar(axs[i].collections[0], ax=axs[i], format="%+2.0f dB")
+    cbar.ax.tick_params(labelsize=font_size_change)
+    for tick in cbar.ax.get_yticklabels():
+        tick.set_fontproperties(font_prop)
 
-    axs[i].set_ylabel('Frequency [Hz]', fontproperties=font_prop)
+    # Set the x-axis to display only integers
+    axs[i].xaxis.set_major_locator(plt.MaxNLocator(integer=True))
+    axs[i].set_ylabel('Mel Frequency', fontproperties=font_prop)
     
 axs[0].set_title(f'Mel-frequency spectrogram of Ground-Truth', fontproperties=font_prop)
 axs[1].set_title('Mel-frequency spectrogram of $\mathcal{V}$', fontproperties=font_prop)
@@ -58,8 +60,8 @@ axs[1].set_xlabel('', fontproperties=font_prop)
 axs[2].set_xlabel('Time [s]', fontproperties=font_prop)
 
 fig.tight_layout()
-mel_filename = 'stacked_spectrograms.pdf'
-mel_path = os.path.join(mel_folder, mel_filename)
+mel_filename = 'stacked_mel_spectrograms_22050.pdf'
+mel_path = os.path.join(audio_folder, mel_filename)
 fig.savefig(mel_path, format='pdf')
 
 plt.close(fig)
