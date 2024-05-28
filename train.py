@@ -564,10 +564,10 @@ def train(rank, a, h):
             labels_random = labels_y_mixed[random_indices]
             samples_random = samples_mixed[random_indices]
             samples_tssd = samples_random.unsqueeze(1)
-            samples_fake = samples_fake.unsqueeze(1)
+            samples_fake_tssd = samples_fake.unsqueeze(1)
             tssd_out = tssdnet(samples_tssd)
             tssd_loss = criterion(tssd_out, labels_random)
-            tssd_predicted = tssdnet(samples_fake)
+            tssd_predicted = tssdnet(samples_fake_tssd)
             # tssd_adv_loss = MSELoss(tssd_predicted, tssd_predicted.detach().new_zeros(tssd_predicted.size())) 
             tssd_adv_loss = criterion(tssd_predicted, tssd_predicted.detach().new_zeros(tssd_predicted.size())) 
             # tssd_loss.backward()
