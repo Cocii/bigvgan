@@ -236,29 +236,29 @@ def train(rank, a, h):
     optim_g = torch.optim.AdamW(generator.parameters(), h.learning_rate, betas=[h.adam_b1, h.adam_b2])
     optim_d = torch.optim.AdamW(itertools.chain(mrd.parameters(), mpd.parameters()),
                                 h.learning_rate, betas=[h.adam_b1, h.adam_b2])
-    # optim_tssd = optim.Adam(tssdnet.parameters(), lr=0.001, weight_decay = 0.0001)
-    # optim_rawnet = torch.optim.Adam(rawnet.parameters(), lr=config_rawnet['lr'], weight_decay = 0.0001)
-    # optim_aasist = torch.optim.Adam(aasistnet.parameters(),
-    #                                  lr=0.1*aasist_optim_config['base_lr'],
-    #                                  betas=aasist_optim_config['betas'],
-    #                                  weight_decay=aasist_optim_config['weight_decay'],
-    #                                  amsgrad=str_to_bool(
-    #                                      aasist_optim_config['amsgrad']))
+    optim_tssd = optim.Adam(tssdnet.parameters(), lr=0.001, weight_decay = 0.0001)
+    optim_rawnet = torch.optim.Adam(rawnet.parameters(), lr=config_rawnet['lr'], weight_decay = 0.0001)
+    optim_aasist = torch.optim.Adam(aasistnet.parameters(),
+                                     lr=0.1*aasist_optim_config['base_lr'],
+                                     betas=aasist_optim_config['betas'],
+                                     weight_decay=aasist_optim_config['weight_decay'],
+                                     amsgrad=str_to_bool(
+                                         aasist_optim_config['amsgrad']))
     
     ## optimizers definition
     if state_dict_do is not None:
         optim_g.load_state_dict(state_dict_do['optim_g'])
         optim_d.load_state_dict(state_dict_do['optim_d'])
-    # if state_dict_rawnet is not None and state_dict_tssd is not None and state_dict_aasist is not None:
-    #     optim_rawnet.load_state_dict(state_dict_rawnet['optim_rawnet'])
-    #     optim_aasist.load_state_dict(state_dict_aasist['optimizer_state_dict'])
-    #     optim_tssd.load_state_dict(state_dict_tssd['optimizer_state_dict'])
+    if state_dict_rawnet is not None and state_dict_tssd is not None and state_dict_aasist is not None:
+        optim_rawnet.load_state_dict(state_dict_rawnet['optim_rawnet'])
+        optim_aasist.load_state_dict(state_dict_aasist['optimizer_state_dict'])
+        optim_tssd.load_state_dict(state_dict_tssd['optimizer_state_dict'])
 
 
     scheduler_g = torch.optim.lr_scheduler.ExponentialLR(optim_g, gamma=h.lr_decay, last_epoch=last_epoch)
     scheduler_d = torch.optim.lr_scheduler.ExponentialLR(optim_d, gamma=h.lr_decay, last_epoch=last_epoch)
-    # scheduler_tssd = optim.lr_scheduler.ExponentialLR(optim_tssd, gamma=0.95)
-    # scheduler_rawnet = optim.lr_scheduler.ExponentialLR(optim_rawnet, gamma=0.95)
+    scheduler_tssd = optim.lr_scheduler.ExponentialLR(optim_tssd, gamma=0.95)
+    scheduler_rawnet = optim.lr_scheduler.ExponentialLR(optim_rawnet, gamma=0.95)
 
 
     # define training and validation datasets
@@ -559,32 +559,32 @@ def train(rank, a, h):
             samples_mixed = torch.cat((samples_real, samples_fake), dim=0)
             
             # compute tssd loss
-            # optim_tssd.zero_grad()
+            optim_tssd.zero_grad()
             random_indices = torch.randperm(len(samples_mixed))
             labels_random = labels_y_mixed[random_indices]
             samples_random = samples_mixed[random_indices]
             samples_tssd = samples_random.unsqueeze(1)
-            samples_fake = samples_fake.unsqueeze(1)
+            samples_fake_tssd = samples_fake.unsqueeze(1)
             tssd_out = tssdnet(samples_tssd)
             tssd_loss = criterion(tssd_out, labels_random)
-            tssd_predicted = tssdnet(samples_fake)
+            # tssd_predicted = tssdnet(samples_fake_tssd)
             # tssd_adv_loss = MSELoss(tssd_predicted, tssd_predicted.detach().new_zeros(tssd_predicted.size())) 
-            tssd_adv_loss = criterion(tssd_predicted, tssd_predicted.detach().new_zeros(tssd_predicted.size())) 
-            # tssd_loss.backward()
-            # optim_tssd.step()
+            # tssd_adv_loss = criterion(tssd_predicted, tssd_predicted.detach().new_zeros(tssd_predicted.size())) 
+            tssd_loss.backward()
+            optim_tssd.step()
 
             ########################################
             #                Rawnet                #
             ########################################   
 
             # # 1 for fake, 0 for real
-            # optim_rawnet.zero_grad()
+            optim_rawnet.zero_grad()
             rawnet_out = rawnet(samples_random)
             rawnet_loss = criterion(rawnet_out, labels_random)
             rawnet_predicted = rawnet(samples_fake)
             rawnet_adv_loss = criterion(rawnet_predicted, rawnet_predicted.detach().new_zeros(rawnet_predicted.size()))
-            # rawnet_loss.backward()
-            # optim_rawnet.step()
+            rawnet_loss.backward()
+            optim_rawnet.step()
             
 
             ########################################
@@ -592,14 +592,14 @@ def train(rank, a, h):
             ########################################   
 
             # 1 for fake, 0 for real
-            # optim_aasist.zero_grad()
+            optim_aasist.zero_grad()
             aasist_out = aasistnet(samples_random.squeeze(1))
             # aasist_out[0] representation, aasist_out[1] is result of seperation
 
             aasist_out = aasist_out[1]
             aasist_loss = criterion(aasist_out, labels_random)
-            # aasist_loss.backward()
-            # optim_aasist.step()
+            aasist_loss.backward()
+            optim_aasist.step()
 
 
             ########################################
@@ -646,10 +646,10 @@ def train(rank, a, h):
             loss_gen_s, losses_gen_s = generator_loss(y_ds_hat_g)
 
             if steps >= a.freeze_step:
-                loss_gen_all = loss_gen_s + loss_gen_f + loss_fm_s + loss_fm_f + loss_mel + 0.05*rawnet_adv_loss + 0.05*tssd_adv_loss
+                loss_gen_all = loss_gen_s + loss_gen_f + loss_fm_s + loss_fm_f + loss_mel
             else:
                 print("WARNING: using regression loss only for G for the first {} steps".format(a.freeze_step))
-                loss_gen_all = loss_mel  + 0.05*rawnet_adv_loss + 0.05*tssd_adv_loss
+                loss_gen_all = loss_mel
 
             loss_gen_all.backward()
             grad_norm_g = torch.nn.utils.clip_grad_norm_(generator.parameters(), 1000.)
@@ -693,25 +693,25 @@ def train(rank, a, h):
                                                     'steps': steps,
                                                     'epoch': epoch})
 
-                    # checkpoint_path = "{}/tssd_{:08d}".format(os.path.join(a.checkpoint_path, "tssd"), steps)
-                    # os.makedirs(os.path.join(a.checkpoint_path, "tssd"), exist_ok=True)
-                    # save_checkpoint(checkpoint_path, {'epoch': epoch,
-                    #                                 'model_state_dict': tssdnet.state_dict(),
-                    #                                 'optimizer_state_dict': optim_tssd.state_dict(),
-                    #                                 'scheduler_state_dict': scheduler_tssd.state_dict()})
+                    checkpoint_path = "{}/tssd_{:08d}".format(os.path.join(a.checkpoint_path, "tssd"), steps)
+                    os.makedirs(os.path.join(a.checkpoint_path, "tssd"), exist_ok=True)
+                    save_checkpoint(checkpoint_path, {'epoch': epoch,
+                                                    'model_state_dict': tssdnet.state_dict(),
+                                                    'optimizer_state_dict': optim_tssd.state_dict(),
+                                                    'scheduler_state_dict': scheduler_tssd.state_dict()})
                     
-                    # checkpoint_path = "{}/aasist_{:08d}".format(os.path.join(a.checkpoint_path, "aasist"), steps)
-                    # os.makedirs(os.path.join(a.checkpoint_path, "aasist"), exist_ok=True)
-                    # save_checkpoint(checkpoint_path, {'epoch': epoch,
-                    #                                 'model_state_dict': aasistnet.state_dict(),
-                    #                                 'optimizer_state_dict': optim_aasist.state_dict(),
-                    #                                 'scheduler_state_dict': scheduler_aasist.state_dict()})
+                    checkpoint_path = "{}/aasist_{:08d}".format(os.path.join(a.checkpoint_path, "aasist"), steps)
+                    os.makedirs(os.path.join(a.checkpoint_path, "aasist"), exist_ok=True)
+                    save_checkpoint(checkpoint_path, {'epoch': epoch,
+                                                    'model_state_dict': aasistnet.state_dict(),
+                                                    'optimizer_state_dict': optim_aasist.state_dict(),
+                                                    'scheduler_state_dict': scheduler_aasist.state_dict()})
                     
-                    # checkpoint_path = "{}/rawnet_{:08d}".format(os.path.join(a.checkpoint_path, "rawnet"), steps)
-                    # os.makedirs(os.path.join(a.checkpoint_path, "rawnet"), exist_ok=True)
-                    # save_checkpoint(checkpoint_path, {'model_state_dict': rawnet.state_dict(),
-                    #                                 'optim_rawnet': optim_rawnet.state_dict(),
-                    #                                 'scheduler_state_dict': scheduler_rawnet.state_dict()})
+                    checkpoint_path = "{}/rawnet_{:08d}".format(os.path.join(a.checkpoint_path, "rawnet"), steps)
+                    os.makedirs(os.path.join(a.checkpoint_path, "rawnet"), exist_ok=True)
+                    save_checkpoint(checkpoint_path, {'model_state_dict': rawnet.state_dict(),
+                                                    'optim_rawnet': optim_rawnet.state_dict(),
+                                                    'scheduler_state_dict': scheduler_rawnet.state_dict()})
                     
                 # Tensorboard summary logging
                 if steps % a.summary_interval == 0:
