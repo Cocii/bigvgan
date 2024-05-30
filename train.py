@@ -271,13 +271,13 @@ def train(rank, a, h):
     aasist_optim_config["steps_per_epoch"] = len(training_filelist)
     total_steps = aasist_optim_config['epochs'] * \
             aasist_optim_config['steps_per_epoch']
-    # scheduler_aasist = torch.optim.lr_scheduler.LambdaLR(
-    #         optim_aasist,
-    #         lr_lambda=lambda step: cosine_annealing(
-    #             step,
-    #             total_steps,
-    #             1,  # since lr_lambda computes multiplicative factor
-    #             aasist_optim_config['lr_min'] / aasist_optim_config['base_lr']))
+    scheduler_aasist = torch.optim.lr_scheduler.LambdaLR(
+            optim_aasist,
+            lr_lambda=lambda step: cosine_annealing(
+                step,
+                total_steps,
+                1,  # since lr_lambda computes multiplicative factor
+                aasist_optim_config['lr_min'] / aasist_optim_config['base_lr']))
     
     trainset = MelDataset(training_filelist, h, h.segment_size, h.n_fft, h.num_mels,
                           h.hop_size, h.win_size, h.sampling_rate, h.fmin, h.fmax, n_cache_reuse=0,
@@ -557,12 +557,13 @@ def train(rank, a, h):
             samples_fake = y_g_hat.detach().squeeze(1)
             labels_y_mixed = torch.cat((label_y_real, label_y_fake), dim=0)
             samples_mixed = torch.cat((samples_real, samples_fake), dim=0)
-            
-            # compute tssd loss
-            optim_tssd.zero_grad()
             random_indices = torch.randperm(len(samples_mixed))
             labels_random = labels_y_mixed[random_indices]
             samples_random = samples_mixed[random_indices]
+            
+            # compute tssd loss
+            optim_tssd.zero_grad()
+            
             samples_tssd = samples_random.unsqueeze(1)
             samples_fake_tssd = samples_fake.unsqueeze(1)
             tssd_out = tssdnet(samples_tssd)
@@ -748,9 +749,9 @@ def train(rank, a, h):
 
         scheduler_g.step()
         scheduler_d.step()
-        # scheduler_tssd.step()
-        # scheduler_aasist.step()
-        # scheduler_rawnet.step()
+        scheduler_tssd.step()
+        scheduler_aasist.step()
+        scheduler_rawnet.step()
         
         if rank == 0:
             print('Time taken for epoch {} is {} sec\n'.format(epoch + 1, int(time.time() - start)))
@@ -787,6 +788,7 @@ def main():
                         help="skip seen dataset. useful for test set inference")
     parser.add_argument('--save_audio', default=False, type=bool,
                         help="save audio of test set inference to disk")
+    
     a = parser.parse_args()
     with open(a.config) as f:
         data = f.read()

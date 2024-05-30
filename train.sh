@@ -24,6 +24,7 @@ python train.py \
 --fine_tuning True \
 --validation_interval 10000 \
 --checkpoint_interval 50000 \
+--debug True
 # --eval_subsample 50 \
 # --checkpoint_interval 50 \
 # --summary_interval 50
