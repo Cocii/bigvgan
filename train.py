@@ -549,42 +549,36 @@ def train(rank, a, h):
             #                 TSSD                 #
             ######################################## 
             # 1 for fake, 0 for real
+            # batch_size = y_g_hat.detach().size(0)
+            # label_y_fake = torch.ones(batch_size).type(torch.int64).to(device) # 1 for fake
+            # label_y_real = torch.zeros(batch_size).type(torch.int64).to(device) # 0 for real
+            # samples_real = y.squeeze(1)
+            # samples_fake = y_g_hat.detach().squeeze(1)
+            # labels_y_mixed = torch.cat((label_y_real, label_y_fake), dim=0)
+            # samples_mixed = torch.cat((samples_real, samples_fake), dim=0)
             
-            batch_size = y_g_hat.detach().size(0)
-            label_y_fake = torch.ones(batch_size).type(torch.int64).to(device) # 1 for fake
-            label_y_real = torch.zeros(batch_size).type(torch.int64).to(device) # 0 for real
-            samples_real = y.squeeze(1)
-            samples_fake = y_g_hat.detach().squeeze(1)
-            labels_y_mixed = torch.cat((label_y_real, label_y_fake), dim=0)
-            samples_mixed = torch.cat((samples_real, samples_fake), dim=0)
-            
-            # compute tssd loss
-            # optim_tssd.zero_grad()
-            random_indices = torch.randperm(len(samples_mixed))
-            labels_random = labels_y_mixed[random_indices]
-            samples_random = samples_mixed[random_indices]
-            samples_tssd = samples_random.unsqueeze(1)
-            samples_fake_tssd = samples_fake.unsqueeze(1)
-            tssd_out = tssdnet(samples_tssd)
-            tssd_loss = criterion(tssd_out, labels_random)
-            tssd_predicted = tssdnet(samples_fake_tssd)
-            # tssd_adv_loss = MSELoss(tssd_predicted, tssd_predicted.detach().new_zeros(tssd_predicted.size())) 
-            tssd_adv_loss = criterion(tssd_predicted, tssd_predicted.detach().new_zeros(tssd_predicted.size())) 
-            # tssd_loss.backward()
-            # optim_tssd.step()
+            # # compute tssd loss
+            # random_indices = torch.randperm(len(samples_mixed))
+            # labels_random = labels_y_mixed[random_indices]
+            # samples_random = samples_mixed[random_indices]
+            # samples_tssd = samples_random.unsqueeze(1)
+            # samples_fake_tssd = samples_fake.unsqueeze(1)
+            # tssd_out = tssdnet(samples_tssd)
+            # tssd_loss = criterion(tssd_out, labels_random)
+            # tssd_predicted = tssdnet(samples_fake_tssd)
+            # # tssd_adv_loss = MSELoss(tssd_predicted, tssd_predicted.detach().new_zeros(tssd_predicted.size())) 
+            # tssd_adv_loss = criterion(tssd_predicted, tssd_predicted.detach().new_zeros(tssd_predicted.size())) 
 
             ########################################
             #                Rawnet                #
             ########################################   
 
             # # 1 for fake, 0 for real
-            # optim_rawnet.zero_grad()
-            rawnet_out = rawnet(samples_random)
-            rawnet_loss = criterion(rawnet_out, labels_random)
-            rawnet_predicted = rawnet(samples_fake)
-            rawnet_adv_loss = criterion(rawnet_predicted, rawnet_predicted.detach().new_zeros(rawnet_predicted.size()))
-            # rawnet_loss.backward()
-            # optim_rawnet.step()
+
+            # rawnet_out = rawnet(samples_random)
+            # rawnet_loss = criterion(rawnet_out, labels_random)
+            # rawnet_predicted = rawnet(samples_fake)
+            # rawnet_adv_loss = criterion(rawnet_predicted, rawnet_predicted.detach().new_zeros(rawnet_predicted.size()))
             
 
             ########################################
@@ -592,15 +586,11 @@ def train(rank, a, h):
             ########################################   
 
             # 1 for fake, 0 for real
-            # optim_aasist.zero_grad()
-            aasist_out = aasistnet(samples_random.squeeze(1))
             # aasist_out[0] representation, aasist_out[1] is result of seperation
 
-            aasist_out = aasist_out[1]
-            aasist_loss = criterion(aasist_out, labels_random)
-            # aasist_loss.backward()
-            # optim_aasist.step()
-
+            # aasist_out = aasistnet(samples_random.squeeze(1))
+            # aasist_out = aasist_out[1]
+            # aasist_loss = criterion(aasist_out, labels_random)
 
             ########################################
             #                BigvGAN               #
@@ -646,10 +636,12 @@ def train(rank, a, h):
             loss_gen_s, losses_gen_s = generator_loss(y_ds_hat_g)
 
             if steps >= a.freeze_step:
-                loss_gen_all = loss_gen_s + loss_gen_f + loss_fm_s + loss_fm_f + loss_mel + 0.05*rawnet_adv_loss + 0.05*tssd_adv_loss
+                # loss_gen_all = loss_gen_s + loss_gen_f + loss_fm_s + loss_fm_f + loss_mel + 0.05*rawnet_adv_loss + 0.05*tssd_adv_loss
+                loss_gen_all = loss_gen_s + loss_gen_f + loss_fm_s + loss_fm_f + loss_mel
             else:
                 print("WARNING: using regression loss only for G for the first {} steps".format(a.freeze_step))
-                loss_gen_all = loss_mel  + 0.05*rawnet_adv_loss + 0.05*tssd_adv_loss
+                loss_gen_all = loss_mel
+                # + 0.05*rawnet_adv_loss + 0.05*tssd_adv_loss
 
             loss_gen_all.backward()
             grad_norm_g = torch.nn.utils.clip_grad_norm_(generator.parameters(), 1000.)
@@ -666,6 +658,13 @@ def train(rank, a, h):
                     log_str = 'Steps : {:d}'.format(steps)
                     log_gen_loss = ', Gen Loss Total : {:4.3f}, Mel-Spec. Error : {:4.3f}, s/b : {:4.3f}'.format(
                         loss_gen_all, mel_error, time.time() - start_b)
+                    try:
+                        tssd_loss
+                    except NameError:
+                        tssd_loss = 0
+                        rawnet_loss = 0
+                        aasist_loss = 0
+
                     log_tssd_loss = ', TSSD_loss : {:4.3f}, Aasist_loss : {:4.3f}'.format(tssd_loss, aasist_loss)
                     log_rawnet_loss = ', Rawnet_loss : {:4.3f}'.format(rawnet_loss)
                     log_str = log_str + log_gen_loss + log_tssd_loss + log_rawnet_loss
@@ -692,26 +691,6 @@ def train(rank, a, h):
                                                     'optim_d': optim_d.state_dict(),
                                                     'steps': steps,
                                                     'epoch': epoch})
-
-                    # checkpoint_path = "{}/tssd_{:08d}".format(os.path.join(a.checkpoint_path, "tssd"), steps)
-                    # os.makedirs(os.path.join(a.checkpoint_path, "tssd"), exist_ok=True)
-                    # save_checkpoint(checkpoint_path, {'epoch': epoch,
-                    #                                 'model_state_dict': tssdnet.state_dict(),
-                    #                                 'optimizer_state_dict': optim_tssd.state_dict(),
-                    #                                 'scheduler_state_dict': scheduler_tssd.state_dict()})
-                    
-                    # checkpoint_path = "{}/aasist_{:08d}".format(os.path.join(a.checkpoint_path, "aasist"), steps)
-                    # os.makedirs(os.path.join(a.checkpoint_path, "aasist"), exist_ok=True)
-                    # save_checkpoint(checkpoint_path, {'epoch': epoch,
-                    #                                 'model_state_dict': aasistnet.state_dict(),
-                    #                                 'optimizer_state_dict': optim_aasist.state_dict(),
-                    #                                 'scheduler_state_dict': scheduler_aasist.state_dict()})
-                    
-                    # checkpoint_path = "{}/rawnet_{:08d}".format(os.path.join(a.checkpoint_path, "rawnet"), steps)
-                    # os.makedirs(os.path.join(a.checkpoint_path, "rawnet"), exist_ok=True)
-                    # save_checkpoint(checkpoint_path, {'model_state_dict': rawnet.state_dict(),
-                    #                                 'optim_rawnet': optim_rawnet.state_dict(),
-                    #                                 'scheduler_state_dict': scheduler_rawnet.state_dict()})
                     
                 # Tensorboard summary logging
                 if steps % a.summary_interval == 0:
@@ -741,16 +720,10 @@ def train(rank, a, h):
                     if not a.debug and steps != 0:
                         validate(rank, a, h, validation_loader,
                                  mode="seen")
-                        # for i in range(len(list_unseen_validation_loader)):
-                        #     validate(rank, a, h, list_unseen_validation_loader[i],
-                        #              mode="unseen_{}".format(list_unseen_validation_loader[i].dataset.name))
             steps += 1
 
         scheduler_g.step()
         scheduler_d.step()
-        # scheduler_tssd.step()
-        # scheduler_aasist.step()
-        # scheduler_rawnet.step()
         
         if rank == 0:
             print('Time taken for epoch {} is {} sec\n'.format(epoch + 1, int(time.time() - start)))
